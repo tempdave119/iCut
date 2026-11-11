@@ -9,7 +9,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 APP_NAME="iCut"
-BUNDLE_ID="com.kevin.icut"
+BUNDLE_ID="com.icut.app"
 DEPLOYMENT_TARGET="13.0"
 BUILD_DIR="$ROOT_DIR/build"
 DIST_DIR="$ROOT_DIR/dist"

@@ -1,5 +1,8 @@
 import AppKit
 
+// 必须在创建 AppDelegate 之前：它会在初始化时读取快捷键配置
+SettingsMigration.runIfNeeded()
+
 let application = NSApplication.shared
 let appDelegate = AppDelegate()
 application.delegate = appDelegate
