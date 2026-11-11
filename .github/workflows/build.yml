@@ -31,27 +31,27 @@ jobs:
           chmod +x scripts/run-tests.sh
           ./scripts/run-tests.sh
 
-      - name: 构建 universal .app
+      - name: 构建 universal .app 与 dmg
         run: |
           chmod +x scripts/build-app.sh
-          ./scripts/build-app.sh --universal
+          ./scripts/build-app.sh --universal --dmg
 
       - name: 校验产物
         run: |
           test -x dist/iCut.app/Contents/MacOS/iCut
           lipo -info dist/iCut.app/Contents/MacOS/iCut
           codesign -dv dist/iCut.app 2>&1 | head -5
+          ls -lh dist/*.dmg
+          hdiutil verify dist/*.dmg
 
-      - name: 打包 zip
+      - name: 计算校验和
         run: |
-          VERSION="${GITHUB_REF_NAME//\//-}"
-          ditto -c -k --keepParent dist/iCut.app "dist/iCut-${VERSION}.zip"
-          shasum -a 256 dist/*.zip
+          shasum -a 256 dist/*.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: iCut-macos
-          path: dist/*.zip
+          path: dist/*.dmg
           if-no-files-found: error
 
       - name: 发布到 Release（仅 tag）
@@ -60,4 +60,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/*.dmg --clobber

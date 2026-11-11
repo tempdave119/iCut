@@ -38,7 +38,7 @@ v0.1 已实现：
 
 ### 安装（下载安装包）
 
-最新版本 [v0.1.1](https://github.com/tempdave119/iCut/releases/tag/v0.1.1)，附件 `iCut-v0.1.1.zip`。解压后把 `iCut.app` 拖进 `/Applications`。
+最新版本见 [Releases](https://github.com/tempdave119/iCut/releases)。dmg 双击挂载后，把 `iCut.app` 拖进卷内的 `Applications` 快捷方式；旧版 zip 解压后直接拖入 `/Applications`。
 
 安装包为 ad-hoc 签名、未经 Apple 公证，首次打开会被 Gatekeeper 拦截：在 Finder 里右键 `iCut.app` 选「打开」，或执行：
 
@@ -51,6 +51,7 @@ xattr -dr com.apple.quarantine /Applications/iCut.app
 ```bash
 ./scripts/build-app.sh             # 编译 + 组装 + ad-hoc 签名，输出 dist/iCut.app
 ./scripts/build-app.sh --universal # arm64 + x86_64 双架构（CI 使用，本地也可跑）
+./scripts/build-app.sh --dmg       # 额外产出 dist/iCut-<版本>.dmg
 ./scripts/run-tests.sh             # 单元测试（自建 runner，断言失败非零退出）
 open dist/iCut.app                 # 启动
 ```

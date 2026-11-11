@@ -16,9 +16,13 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
 
 universal=false
-if [[ "${1:-}" == "--universal" ]]; then
-  universal=true
-fi
+make_dmg=false
+for arg in "$@"; do
+  case "$arg" in
+    --universal) universal=true ;;
+    --dmg) make_dmg=true ;;
+  esac
+done
 
 sources=()
 while IFS= read -r file; do
@@ -68,3 +72,18 @@ codesign --verify --verbose=1 "$APP_DIR"
 
 echo "==> 完成：$APP_DIR"
 lipo -info "$APP_DIR/Contents/MacOS/$APP_NAME"
+
+if [[ "$make_dmg" == true ]]; then
+  echo "==> 生成 dmg"
+  VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT_DIR/resources/Info.plist")"
+  DMG_STAGE="$BUILD_DIR/dmg"
+  DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
+  # 卷内附 Applications 快捷方式，用户拖一下就能装入
+  rm -rf "$DMG_STAGE"
+  mkdir -p "$DMG_STAGE"
+  cp -R "$APP_DIR" "$DMG_STAGE/"
+  ln -s /Applications "$DMG_STAGE/Applications"
+  hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_PATH" >/dev/null
+  hdiutil verify "$DMG_PATH" >/dev/null
+  echo "==> 完成：$DMG_PATH"
+fi
