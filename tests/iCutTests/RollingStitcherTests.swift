@@ -9,11 +9,11 @@ func runRollingStitcherTests() {
         expect(false, "构造测试图失败")
         return
     }
-    let firstHashes = RollingStitcher.rowHashes(of: first)
+    let firstHashes = RollingStitcher.rowSignatures(of: first)
     expectEqual(firstHashes.count, 100, "行指纹数量等于图像高度")
 
     expectEqual(
-        RollingStitcher.findOverlap(existing: firstHashes, incoming: RollingStitcher.rowHashes(of: second), minOverlap: 40),
+        RollingStitcher.findOverlap(existing: firstHashes, incoming: RollingStitcher.rowSignatures(of: second), minOverlap: 40),
         RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),
         "相邻帧重叠 40 行"
     )
@@ -25,7 +25,7 @@ func runRollingStitcherTests() {
     expect(
         RollingStitcher.findOverlap(
             existing: firstHashes,
-            incoming: RollingStitcher.rowHashes(of: far),
+            incoming: RollingStitcher.rowSignatures(of: far),
             minOverlap: 40
         ) == nil,
         "没有重叠时应返回 nil"
@@ -44,7 +44,7 @@ func runRollingStitcherTests() {
     expectEqual(
         RollingStitcher.findOverlap(
             existing: firstHashes,
-            incoming: RollingStitcher.rowHashes(of: corrupted),
+            incoming: RollingStitcher.rowSignatures(of: corrupted),
             minOverlap: 40
         ),
         RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),
@@ -76,8 +76,8 @@ func runStitchAccumulatorTests() {
     expectEqual(stitched.width, width, "合成宽度")
     expectEqual(stitched.height, 220, "合成高度")
     expectEqual(
-        RollingStitcher.rowHashes(of: stitched),
-        RollingStitcher.rowHashes(of: expected),
+        RollingStitcher.rowSignatures(of: stitched),
+        RollingStitcher.rowSignatures(of: expected),
         "合成内容与整页逐行一致（含顺序）"
     )
 
@@ -109,8 +109,8 @@ func runStickyHeaderStitchingTests() {
 
     expectEqual(
         RollingStitcher.findOverlap(
-            existing: RollingStitcher.rowHashes(of: frame1),
-            incoming: RollingStitcher.rowHashes(of: frame2),
+            existing: RollingStitcher.rowSignatures(of: frame1),
+            incoming: RollingStitcher.rowSignatures(of: frame2),
             minOverlap: 40
         ),
         RollingStitcher.Overlap(skipRows: headerHeight, overlapRows: 40),
@@ -128,8 +128,8 @@ func runStickyHeaderStitchingTests() {
         return
     }
     expectEqual(
-        RollingStitcher.rowHashes(of: stitched),
-        RollingStitcher.rowHashes(of: expected),
+        RollingStitcher.rowSignatures(of: stitched),
+        RollingStitcher.rowSignatures(of: expected),
         "粘性头部只出现一次，正文连续"
     )
 }
@@ -150,8 +150,8 @@ func runScrollbarStitchingTests() {
 
     expectEqual(
         RollingStitcher.findOverlap(
-            existing: RollingStitcher.rowHashes(of: frame1),
-            incoming: RollingStitcher.rowHashes(of: frame2),
+            existing: RollingStitcher.rowSignatures(of: frame1),
+            incoming: RollingStitcher.rowSignatures(of: frame2),
             minOverlap: 40
         ),
         RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),

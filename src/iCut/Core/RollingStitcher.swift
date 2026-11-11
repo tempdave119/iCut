@@ -1,11 +1,24 @@
 import CoreGraphics
 
-/// 长截图的行指纹与重叠匹配纯逻辑：不依赖 UI，便于单测。
-/// 思路：把每行降采样成一个 64 位指纹，在“上一帧末尾 == 本帧开头”的重叠行里找匹配。
-/// 页面顶部常见粘性导航栏（每帧都一样、不随滚动移动），所以还支持跳过本帧开头若干行。
+/// 长截图的行指纹与重叠匹配：不依赖 UI，便于单测。
+///
+/// 早期版本用「整行精确哈希」，触控板平滑滚动会产生亚像素偏移，同一内容每帧重新栅格化后
+/// 像素并不完全相同，哈希永远对不上（表现为怎么滚都拼不进去）。现在改成：
+/// - 每行切成若干横向块，块内取平均亮度并量化成粗指纹；
+/// - 行与行、块与块允许少量差异；
+/// - 先做严格匹配（绝大多数页面都能命中），不行再走容忍匹配。
+/// 另外页面顶部常见粘性导航（每帧都一样），匹配时允许跳过本帧开头若干行。
 enum RollingStitcher {
+    /// 一行切成多少块；块越少越抗噪，但行与行要能区分开，96 块 + 8 位均值在真实页面上足够
+    private static let blocksPerRow = 96
+    /// 量化：保留 8 位均值，不再粗化（粗化会让相邻行变得一模一样，重叠定位会错位）
+    private static let quantizationShift: UInt8 = 0
+    /// 块亮度差超过这个值算“不同”（容忍亚像素偏移带来的轻微抗锯齿差异）
+    private static let blockDifferenceThreshold = 8
     /// 一帧里最多允许多少行“固定不动”的头部（粘性导航）
     static let maxStickyRows = 240
+
+    typealias RowSignature = [UInt8]
 
     struct Overlap: Equatable {
         /// 本帧开头被跳过的固定行数（粘性头部）
@@ -14,66 +27,83 @@ enum RollingStitcher {
         let overlapRows: Int
     }
 
-    /// 每行采样的列数：宽度很大时降采样，把单帧哈希控制在毫秒级
-    private static let samplesPerRow = 96
-    /// 左右各留多少像素不参与哈希：页面右侧滚动条的 thumb 不随内容移动，
-    /// 一旦被采到会让整行指纹都变，导致永远匹配不上
-    private static let horizontalInset = 16
-    /// 至少留多少行差异才容忍（光标闪烁、抗锯齿会让个别行不同）
-    private static let mismatchRatio = 0.01
+    // MARK: - 指纹
 
-    /// 逐行指纹（图像顶行在前）；读取失败返回空数组。
-    static func rowHashes(of image: CGImage) -> [UInt64] {
+    /// 逐行粗指纹（顶行在前）；读取失败返回空数组。
+    static func rowSignatures(of image: CGImage) -> [RowSignature] {
         guard let buffer = normalizedBuffer(of: image) else { return [] }
-        var hashes: [UInt64] = []
-        hashes.reserveCapacity(buffer.height)
 
-        // 只采中间区域：避开左右边缘的滚动条与窗口圆角
-        let inset = min(max(horizontalInset, buffer.width / 20), buffer.width / 4)
+        // 只采中间区域：避开右侧滚动条与窗口圆角（它们不随内容滚动）
+        let inset = min(max(16, buffer.width / 20), buffer.width / 4)
         let startX = inset
         let endX = max(startX + 1, buffer.width - inset)
-        let stride = max(1, (endX - startX) / samplesPerRow)
+        let regionWidth = endX - startX
+        let blockWidth = max(1, regionWidth / blocksPerRow)
+
+        var signatures: [RowSignature] = []
+        signatures.reserveCapacity(buffer.height)
 
         for row in 0..<buffer.height {
-            var hash: UInt64 = 0xcbf29ce484222325
             let rowStart = row * buffer.bytesPerRow
-            var x = startX
-            while x < endX {
-                let offset = rowStart + x * 4
-                for channel in 0..<4 {
-                    hash ^= UInt64(buffer.data[offset + channel])
-                    hash = hash &* 0x100000001b3
+            var signature = [UInt8](repeating: 0, count: blocksPerRow)
+            for block in 0..<blocksPerRow {
+                let blockStart = startX + block * blockWidth
+                let blockEnd = min(endX, blockStart + blockWidth)
+                guard blockEnd > blockStart else { continue }
+                var sum = 0
+                var count = 0
+                var x = blockStart
+                while x < blockEnd {
+                    let offset = rowStart + x * 4
+                    let luminance = (Int(buffer.data[offset]) * 77
+                        + Int(buffer.data[offset + 1]) * 150
+                        + Int(buffer.data[offset + 2]) * 29) >> 8
+                    sum += luminance
+                    count += 1
+                    x += 1
                 }
-                x += stride
+                signature[block] = UInt8((sum / max(1, count)) >> Int(quantizationShift))
             }
-            hashes.append(hash)
+            signatures.append(signature)
         }
-        return hashes
+        return signatures
     }
 
-    /// 找最大重叠：先全域精确匹配，不行再允许少量行差异（光标闪烁、抗锯齿）。
-    /// 两阶段分开是为了避免“容忍档”把粘性头部的前几行也算进重叠，导致 skip 偏移。
+    // MARK: - 重叠匹配
+
+    /// 找最大重叠：先严格匹配，失败再做块级容忍匹配。
     static func findOverlap(
-        existing: [UInt64],
-        incoming: [UInt64],
-        minOverlap: Int
+        existing: [RowSignature],
+        incoming: [RowSignature],
+        minOverlap: Int,
+        preferredSkip: Int = 0
     ) -> Overlap? {
         guard minOverlap > 0 else { return nil }
         let maximumSkip = min(maxStickyRows, max(0, incoming.count - minOverlap))
-        if let exact = search(existing: existing, incoming: incoming, minOverlap: minOverlap, maximumSkip: maximumSkip, tolerant: false) {
-            return exact
+
+        var skips: [Int] = []
+        if preferredSkip >= 0, preferredSkip <= maximumSkip {
+            skips.append(preferredSkip)
         }
-        return search(existing: existing, incoming: incoming, minOverlap: minOverlap, maximumSkip: maximumSkip, tolerant: true)
+        for skip in 0...maximumSkip where skip != preferredSkip {
+            skips.append(skip)
+        }
+
+        // 先严格后容忍：严格档全扫一遍，避免容忍档把粘性头部前几行算进重叠造成 skip 偏移
+        if let strict = search(existing: existing, incoming: incoming, skips: skips, minOverlap: minOverlap, tolerant: false) {
+            return strict
+        }
+        return search(existing: existing, incoming: incoming, skips: skips, minOverlap: minOverlap, tolerant: true)
     }
 
     private static func search(
-        existing: [UInt64],
-        incoming: [UInt64],
+        existing: [RowSignature],
+        incoming: [RowSignature],
+        skips: [Int],
         minOverlap: Int,
-        maximumSkip: Int,
         tolerant: Bool
     ) -> Overlap? {
-        for skip in 0...maximumSkip {
+        for skip in skips {
             if let overlap = match(
                 existing: existing,
                 incoming: incoming,
@@ -87,10 +117,10 @@ enum RollingStitcher {
         return nil
     }
 
-    /// 从最大重叠往下找：先用末行做锚点定位候选，再逐行核对，避免每帧 O(n²) 全扫
+    /// 从最大重叠往下找：先用末行做锚点定位候选，再整段核对
     private static func match(
-        existing: [UInt64],
-        incoming: [UInt64],
+        existing: [RowSignature],
+        incoming: [RowSignature],
         skip: Int,
         minOverlap: Int,
         tolerant: Bool
@@ -98,31 +128,53 @@ enum RollingStitcher {
         guard let anchor = existing.last else { return nil }
         let maxOverlap = min(existing.count, incoming.count - skip)
         guard maxOverlap >= minOverlap else { return nil }
-        let tolerance = tolerant ? max(2, Int(Double(maxOverlap) * mismatchRatio)) : 0
 
         for overlap in stride(from: maxOverlap, through: minOverlap, by: -1) {
-            let anchorIndex = skip + overlap - 1
-            guard incoming[anchorIndex] == anchor else { continue }
-            if suffixMatches(existing: existing, incoming: incoming, skip: skip, overlap: overlap, tolerance: tolerance) {
+            guard rowMatches(anchor, incoming[skip + overlap - 1], tolerant: tolerant) else { continue }
+            if overlapMatches(
+                existing: existing,
+                incoming: incoming,
+                skip: skip,
+                overlap: overlap,
+                tolerant: tolerant
+            ) {
                 return overlap
             }
         }
         return nil
     }
 
-    private static func suffixMatches(
-        existing: [UInt64],
-        incoming: [UInt64],
+    private static func overlapMatches(
+        existing: [RowSignature],
+        incoming: [RowSignature],
         skip: Int,
         overlap: Int,
-        tolerance: Int
+        tolerant: Bool
     ) -> Bool {
         let start = existing.count - overlap
+        let allowedMismatchRows = tolerant ? max(2, overlap / 10) : 0
         var mismatches = 0
         for index in 0..<overlap {
-            if existing[start + index] != incoming[skip + index] {
+            if !rowMatches(existing[start + index], incoming[skip + index], tolerant: tolerant) {
                 mismatches += 1
-                if mismatches > tolerance { return false }
+                if mismatches > allowedMismatchRows { return false }
+            }
+        }
+        return true
+    }
+
+    private static func rowMatches(_ lhs: RowSignature, _ rhs: RowSignature, tolerant: Bool) -> Bool {
+        // 快路径：像素级相同（非平滑滚动时绝大多数帧走这里）
+        if lhs == rhs { return true }
+        guard tolerant, lhs.count == rhs.count else { return false }
+
+        let allowedBlocks = max(2, lhs.count / 8)
+        var badBlocks = 0
+        for index in 0..<lhs.count {
+            let difference = abs(Int(lhs[index]) - Int(rhs[index]))
+            if difference > blockDifferenceThreshold {
+                badBlocks += 1
+                if badBlocks > allowedBlocks { return false }
             }
         }
         return true

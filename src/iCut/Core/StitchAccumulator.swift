@@ -14,20 +14,22 @@ final class StitchAccumulator {
     private(set) var width = 0
     private(set) var height = 0
     private var strips: [CGImage] = []
-    private var hashes: [UInt64] = []
+    private var signatures: [RollingStitcher.RowSignature] = []
+    /// 上一次成功的粘性头部行数，下次优先按它搜
+    private var lastSkipRows = 0
 
     init(maxHeight: Int = 20000) {
         self.maxHeight = maxHeight
     }
 
     func append(_ image: CGImage) -> AppendResult {
-        let incoming = RollingStitcher.rowHashes(of: image)
+        let incoming = RollingStitcher.rowSignatures(of: image)
         guard !incoming.isEmpty else { return .unchanged("无法读取画面") }
 
         guard width > 0 else {
             width = image.width
             strips = [image]
-            hashes = incoming
+            signatures = incoming
             height = incoming.count
             return .appended(addedRows: incoming.count)
         }
@@ -35,9 +37,10 @@ final class StitchAccumulator {
         guard image.width == width else { return .unchanged("画面尺寸变化") }
 
         guard let match = RollingStitcher.findOverlap(
-            existing: hashes,
+            existing: signatures,
             incoming: incoming,
-            minOverlap: minOverlap
+            minOverlap: minOverlap,
+            preferredSkip: lastSkipRows
         ) else {
             return .unchanged("未找到重叠区域")
         }
@@ -55,7 +58,8 @@ final class StitchAccumulator {
         }
 
         strips.append(strip)
-        hashes.append(contentsOf: incoming[stripStart...])
+        signatures.append(contentsOf: incoming[stripStart...])
+        lastSkipRows = match.skipRows
         height += added
         return .appended(addedRows: added)
     }
