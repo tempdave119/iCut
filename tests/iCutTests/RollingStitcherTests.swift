@@ -14,7 +14,7 @@ func runRollingStitcherTests() {
 
     expectEqual(
         RollingStitcher.findOverlap(existing: firstHashes, incoming: RollingStitcher.rowHashes(of: second), minOverlap: 40),
-        40,
+        RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),
         "相邻帧重叠 40 行"
     )
 
@@ -33,7 +33,7 @@ func runRollingStitcherTests() {
 
     expectEqual(
         RollingStitcher.findOverlap(existing: firstHashes, incoming: firstHashes, minOverlap: 40),
-        100,
+        RollingStitcher.Overlap(skipRows: 0, overlapRows: 100),
         "画面未滚动时重叠等于帧高"
     )
 
@@ -47,7 +47,7 @@ func runRollingStitcherTests() {
             incoming: RollingStitcher.rowHashes(of: corrupted),
             minOverlap: 40
         ),
-        40,
+        RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),
         "个别行变化（光标闪烁）仍能匹配到重叠"
     )
 }
@@ -87,6 +87,77 @@ func runStitchAccumulatorTests() {
     expectEqual(limited.append(first), .appended(addedRows: 100), "上限内首帧正常加入")
     expectEqual(limited.append(second), .unchanged("已达高度上限"), "超出上限拒绝追加")
     expectEqual(limited.height, 100, "超限后高度不变")
+}
+
+/// 页面顶部有粘性导航栏时：头部只保留一份，正文连续拼接。
+func runStickyHeaderStitchingTests() {
+    let width = 40
+    let headerHeight = 30
+
+    guard let header = makeRowsImage(from: 900, count: headerHeight, width: width),
+          let body1 = makeRowsImage(from: 0, count: 100, width: width),
+          let body2 = makeRowsImage(from: 60, count: 100, width: width),
+          let body3 = makeRowsImage(from: 120, count: 100, width: width),
+          let frame1 = makeFrame(header: header, body: body1),
+          let frame2 = makeFrame(header: header, body: body2),
+          let frame3 = makeFrame(header: header, body: body3),
+          let expectedBody = makeRowsImage(from: 0, count: 220, width: width),
+          let expected = makeFrame(header: header, body: expectedBody) else {
+        expect(false, "构造粘性头部测试图失败")
+        return
+    }
+
+    expectEqual(
+        RollingStitcher.findOverlap(
+            existing: RollingStitcher.rowHashes(of: frame1),
+            incoming: RollingStitcher.rowHashes(of: frame2),
+            minOverlap: 40
+        ),
+        RollingStitcher.Overlap(skipRows: headerHeight, overlapRows: 40),
+        "粘性头部应被识别为跳过的行"
+    )
+
+    let accumulator = StitchAccumulator(maxHeight: 20000)
+    expectEqual(accumulator.append(frame1), .appended(addedRows: 130), "首帧含头部全量加入")
+    expectEqual(accumulator.append(frame2), .appended(addedRows: 60), "第二帧丢掉头部后追加 60 行")
+    expectEqual(accumulator.append(frame3), .appended(addedRows: 60), "第三帧同理")
+    expectEqual(accumulator.height, 250, "累计高度 = 头部 30 + 正文 220")
+
+    guard let stitched = accumulator.makeImage() else {
+        expect(false, "合成失败")
+        return
+    }
+    expectEqual(
+        RollingStitcher.rowHashes(of: stitched),
+        RollingStitcher.rowHashes(of: expected),
+        "粘性头部只出现一次，正文连续"
+    )
+}
+
+/// 把头部和正文上下拼成一张帧图（头部在顶部）
+private func makeFrame(header: CGImage?, body: CGImage) -> CGImage? {
+    let width = body.width
+    let headerHeight = header?.height ?? 0
+    let height = headerHeight + body.height
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        return nil
+    }
+    var y = CGFloat(height)
+    if let header {
+        y -= CGFloat(header.height)
+        context.draw(header, in: CGRect(x: 0, y: y, width: CGFloat(width), height: CGFloat(header.height)))
+    }
+    y -= CGFloat(body.height)
+    context.draw(body, in: CGRect(x: 0, y: y, width: CGFloat(width), height: CGFloat(body.height)))
+    return context.makeImage()
 }
 
 /// 逐行渐变测试图：每行颜色由行号决定，行与行差异明显，便于验证重叠与拼接顺序

@@ -34,7 +34,7 @@ final class StitchAccumulator {
 
         guard image.width == width else { return .unchanged("画面尺寸变化") }
 
-        guard let overlap = RollingStitcher.findOverlap(
+        guard let match = RollingStitcher.findOverlap(
             existing: hashes,
             incoming: incoming,
             minOverlap: minOverlap
@@ -42,19 +42,20 @@ final class StitchAccumulator {
             return .unchanged("未找到重叠区域")
         }
 
-        let added = incoming.count - overlap
+        // skipRows 是页面粘性头部（每帧都在、不随滚动移动），只保留一份，不重复拼进去
+        let added = incoming.count - match.skipRows - match.overlapRows
         guard added > 0 else { return .unchanged("画面未滚动") }
         guard height + added <= maxHeight else { return .unchanged("已达高度上限") }
 
-        // overlap 按顶行计数，cropping 的 y 也从顶部算
+        let stripStart = match.skipRows + match.overlapRows
         guard let strip = image.cropping(
-            to: CGRect(x: 0, y: overlap, width: width, height: added)
+            to: CGRect(x: 0, y: stripStart, width: width, height: added)
         ) else {
             return .unchanged("裁切失败")
         }
 
         strips.append(strip)
-        hashes.append(contentsOf: incoming[overlap...])
+        hashes.append(contentsOf: incoming[stripStart...])
         height += added
         return .appended(addedRows: added)
     }

@@ -1,8 +1,19 @@
 import CoreGraphics
 
 /// 长截图的行指纹与重叠匹配纯逻辑：不依赖 UI，便于单测。
-/// 思路：把每行降采样成一个 64 位指纹，相邻两帧在“上一帧末尾 == 本帧开头”的重叠行里找匹配。
+/// 思路：把每行降采样成一个 64 位指纹，在“上一帧末尾 == 本帧开头”的重叠行里找匹配。
+/// 页面顶部常见粘性导航栏（每帧都一样、不随滚动移动），所以还支持跳过本帧开头若干行。
 enum RollingStitcher {
+    /// 一帧里最多允许多少行“固定不动”的头部（粘性导航）
+    static let maxStickyRows = 240
+
+    struct Overlap: Equatable {
+        /// 本帧开头被跳过的固定行数（粘性头部）
+        let skipRows: Int
+        /// 与已拼接内容的重叠行数
+        let overlapRows: Int
+    }
+
     /// 每行采样的列数：宽度很大时降采样，把单帧哈希控制在毫秒级
     private static let samplesPerRow = 96
     /// 允许的行差异比例（光标闪烁、抗锯齿会让个别行不同）
@@ -32,40 +43,76 @@ enum RollingStitcher {
         return hashes
     }
 
-    /// 找最大重叠 h：existing 末尾 h 行 == incoming 开头 h 行；找不到返回 nil。
-    /// 先做精确匹配，失败后再允许 1% 的行差异重试一次。
-    static func findOverlap(existing: [UInt64], incoming: [UInt64], minOverlap: Int) -> Int? {
-        let maxOverlap = min(existing.count, incoming.count)
-        guard minOverlap > 0, maxOverlap >= minOverlap else { return nil }
-
-        if let exact = largestMatch(existing: existing, incoming: incoming, minOverlap: minOverlap, tolerance: 0) {
+    /// 找最大重叠：先全域精确匹配，不行再允许少量行差异（光标闪烁、抗锯齿）。
+    /// 两阶段分开是为了避免“容忍档”把粘性头部的前几行也算进重叠，导致 skip 偏移。
+    static func findOverlap(
+        existing: [UInt64],
+        incoming: [UInt64],
+        minOverlap: Int
+    ) -> Overlap? {
+        guard minOverlap > 0 else { return nil }
+        let maximumSkip = min(maxStickyRows, max(0, incoming.count - minOverlap))
+        if let exact = search(existing: existing, incoming: incoming, minOverlap: minOverlap, maximumSkip: maximumSkip, tolerant: false) {
             return exact
         }
-        let tolerance = max(2, maxOverlap / 100)
-        return largestMatch(existing: existing, incoming: incoming, minOverlap: minOverlap, tolerance: tolerance)
+        return search(existing: existing, incoming: incoming, minOverlap: minOverlap, maximumSkip: maximumSkip, tolerant: true)
     }
 
-    private static func largestMatch(
+    private static func search(
         existing: [UInt64],
         incoming: [UInt64],
         minOverlap: Int,
-        tolerance: Int
+        maximumSkip: Int,
+        tolerant: Bool
+    ) -> Overlap? {
+        for skip in 0...maximumSkip {
+            if let overlap = match(
+                existing: existing,
+                incoming: incoming,
+                skip: skip,
+                minOverlap: minOverlap,
+                tolerant: tolerant
+            ) {
+                return Overlap(skipRows: skip, overlapRows: overlap)
+            }
+        }
+        return nil
+    }
+
+    /// 从最大重叠往下找：先用末行做锚点定位候选，再逐行核对，避免每帧 O(n²) 全扫
+    private static func match(
+        existing: [UInt64],
+        incoming: [UInt64],
+        skip: Int,
+        minOverlap: Int,
+        tolerant: Bool
     ) -> Int? {
-        let maxOverlap = min(existing.count, incoming.count)
+        guard let anchor = existing.last else { return nil }
+        let maxOverlap = min(existing.count, incoming.count - skip)
         guard maxOverlap >= minOverlap else { return nil }
+        let tolerance = tolerant ? max(2, maxOverlap / 100) : 0
+
         for overlap in stride(from: maxOverlap, through: minOverlap, by: -1) {
-            if matches(existing: existing, incoming: incoming, overlap: overlap, tolerance: tolerance) {
+            let anchorIndex = skip + overlap - 1
+            guard incoming[anchorIndex] == anchor else { continue }
+            if suffixMatches(existing: existing, incoming: incoming, skip: skip, overlap: overlap, tolerance: tolerance) {
                 return overlap
             }
         }
         return nil
     }
 
-    private static func matches(existing: [UInt64], incoming: [UInt64], overlap: Int, tolerance: Int) -> Bool {
+    private static func suffixMatches(
+        existing: [UInt64],
+        incoming: [UInt64],
+        skip: Int,
+        overlap: Int,
+        tolerance: Int
+    ) -> Bool {
         let start = existing.count - overlap
         var mismatches = 0
         for index in 0..<overlap {
-            if existing[start + index] != incoming[index] {
+            if existing[start + index] != incoming[skip + index] {
                 mismatches += 1
                 if mismatches > tolerance { return false }
             }

@@ -38,6 +38,7 @@ runAutoSaverTests()
 runSettingsMigrationTests()
 runRollingStitcherTests()
 runStitchAccumulatorTests()
+runStickyHeaderStitchingTests()
 
 print("")
 if failures == 0 {
