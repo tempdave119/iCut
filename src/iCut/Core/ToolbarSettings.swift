@@ -21,7 +21,7 @@ enum ToolbarSettings {
     static func load() -> ToolbarPosition {
         guard let raw = UserDefaults.standard.string(forKey: key),
               let position = ToolbarPosition(rawValue: raw) else {
-            return .followSelection
+            return .fixedBottom
         }
         return position
     }
