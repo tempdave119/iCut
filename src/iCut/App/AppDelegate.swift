@@ -206,6 +206,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let front = NSWorkspace.shared.frontmostApplication,
            front.bundleIdentifier != Bundle.main.bundleIdentifier {
             appBeforeCapture = front
+        } else if let previous = appBeforeCapture, previous.isTerminated {
+            // 从菜单触发时前台可能是 iCut 自己，沿用上次目标；但它退出后不能再拿来恢复
+            appBeforeCapture = nil
         }
         // 从菜单触发时菜单还在屏幕上，延后一拍再抓，避免菜单被截进冻结帧
         DispatchQueue.main.async { [weak self] in
@@ -260,8 +263,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .ocrRequested(let selection):
                 self.recognizeText(in: selection.image)
 
-            case .longCaptureRequested(let selection):
-                self.startLongCapture(selection)
+            case .longCaptureRequested(let frame, let rectInScreen):
+                self.startLongCapture(frame: frame, rectInScreen: rectInScreen)
 
             case .saveRequested(let selection):
                 let name = ImageSaver.defaultFileName()
@@ -281,14 +284,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - 长截图
 
     /// 长截图不复用冻结帧：按固定屏幕区域定时实时抓帧，用户自己滚动页面，完成时输出整图。
-    private func startLongCapture(_ selection: SelectionOverlayController.CaptureSelection) {
+    private func startLongCapture(frame: DisplayFrame, rectInScreen: CGRect) {
         guard longCapture == nil else { return }
         // 旧贴图会被抓进长图，会话期间先隐藏，结束再恢复
         pinController.hideAllForCapture()
 
         let controller = LongCaptureController(
-            frame: selection.frame,
-            rectInScreen: selection.rectInScreen
+            frame: frame,
+            rectInScreen: rectInScreen
         ) { [weak self] output in
             guard let self else { return }
             self.pinController.restoreAfterCapture()
@@ -315,20 +318,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             LongCaptureToast.show(
                 message,
-                near: Self.appKitRect(for: selection),
-                in: selection.frame.screenFrame
+                near: Self.appKitRect(frame: frame, rectInScreen: rectInScreen),
+                in: frame.screenFrame
             )
         }
         longCapture = controller
         controller.start()
 
-        // 把焦点还给原来的应用：iCut 占着前台时，页面可能收不到滚轮，表现为“怎么滚都不动”。
-        // 实测 activate(options: []) 会返回 false，必须带 activateIgnoringOtherApps。
-        if let app = appBeforeCapture, app.bundleIdentifier != Bundle.main.bundleIdentifier {
-            app.activate(options: [.activateIgnoringOtherApps])
-        } else {
-            NSApp.deactivate()
+        restoreFocusAfterLongCaptureStart()
+    }
+
+    /// 把焦点还给截图前的应用：iCut 占着前台时页面可能收不到滚轮，表现为“怎么滚都不动”。
+    /// 目标已退出或激活失败时回退到取消激活 iCut，避免前台卡在一个没有窗口的进程上。
+    private func restoreFocusAfterLongCaptureStart() {
+        if let app = appBeforeCapture,
+           app.bundleIdentifier != Bundle.main.bundleIdentifier,
+           !app.isTerminated,
+           app.activate(options: [.activateIgnoringOtherApps]) {
+            return
         }
+        NSApp.deactivate()
     }
 
     // MARK: - 文字识别
@@ -362,13 +371,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 选区转为 AppKit 全局坐标，给悬浮提示定位
-    private static func appKitRect(for selection: SelectionOverlayController.CaptureSelection) -> CGRect {
-        let screen = selection.frame.screenFrame
+    private static func appKitRect(frame: DisplayFrame, rectInScreen: CGRect) -> CGRect {
+        let screen = frame.screenFrame
         return CGRect(
-            x: screen.minX + selection.rectInScreen.minX,
-            y: screen.maxY - selection.rectInScreen.minY - selection.rectInScreen.height,
-            width: selection.rectInScreen.width,
-            height: selection.rectInScreen.height
+            x: screen.minX + rectInScreen.minX,
+            y: screen.maxY - rectInScreen.minY - rectInScreen.height,
+            width: rectInScreen.width,
+            height: rectInScreen.height
         )
     }
 

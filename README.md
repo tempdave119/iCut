@@ -108,3 +108,13 @@ dist/              构建产物（不入库）
 ## 开发说明
 
 项目规范与过程文档（章程、需求、设计、WBS、检查清单）保存在本地工作区，不随仓库分发。
+
+### 长截图调试
+
+长截图匹配失败时，可临时打开调试抓帧（默认关闭）：
+
+```bash
+defaults write com.icut.app debug.longCaptureDump -bool YES
+```
+
+开启后匹配失败的帧会以 PNG 存到 `~/Library/Caches/longshot-debug/`（每次会话最多 20 张），供离线分析为什么衔接不上。排查完用 `defaults delete com.icut.app debug.longCaptureDump` 关掉。

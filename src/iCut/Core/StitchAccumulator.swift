@@ -34,7 +34,11 @@ final class StitchAccumulator {
             return .appended(addedRows: incoming.count)
         }
 
-        guard image.width == width else { return .unchanged("画面尺寸变化") }
+        // 抓屏回图偶尔比首帧差 1~2px（窗口边缘、缩放取整）；严格相等会让会话永久卡在「画面尺寸变化」
+        guard abs(image.width - width) <= 2 else { return .unchanged("画面尺寸变化") }
+        // 已到上限就不必再花时间匹配，直接短路
+        let remaining = maxHeight - height
+        guard remaining > 0 else { return .unchanged("已达高度上限") }
 
         guard let match = RollingStitcher.findOverlap(
             existing: signatures,
@@ -48,20 +52,22 @@ final class StitchAccumulator {
         // skipRows 是页面粘性头部（每帧都在、不随滚动移动），只保留一份，不重复拼进去
         let added = incoming.count - match.skipRows - match.overlapRows
         guard added > 0 else { return .unchanged("画面未滚动") }
-        guard height + added <= maxHeight else { return .unchanged("已达高度上限") }
 
+        // 超出上限时裁到剩余容量，不整帧丢弃，否则长图永远差最后一段
+        let take = min(added, remaining)
         let stripStart = match.skipRows + match.overlapRows
         guard let strip = image.cropping(
-            to: CGRect(x: 0, y: stripStart, width: width, height: added)
+            to: CGRect(x: 0, y: stripStart, width: min(width, image.width), height: take)
         ) else {
             return .unchanged("裁切失败")
         }
 
         strips.append(strip)
-        signatures.append(contentsOf: incoming[stripStart...])
+        // 签名必须与高度同步：超出上限时只追加实际裁进来的行
+        signatures.append(contentsOf: incoming[stripStart..<(stripStart + take)])
         lastSkipRows = match.skipRows
-        height += added
-        return .appended(addedRows: added)
+        height += take
+        return .appended(addedRows: take)
     }
 
     /// 自顶向下合成；没有内容时返回 nil。
@@ -83,7 +89,7 @@ final class StitchAccumulator {
         for strip in strips {
             let stripHeight = CGFloat(strip.height)
             y -= stripHeight
-            context.draw(strip, in: CGRect(x: 0, y: y, width: CGFloat(width), height: stripHeight))
+            context.draw(strip, in: CGRect(x: 0, y: y, width: CGFloat(strip.width), height: stripHeight))
         }
         return context.makeImage()
     }

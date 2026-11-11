@@ -16,7 +16,8 @@ final class SelectionOverlayController {
         case saveRequested(CaptureSelection)
         case pinRequested(CaptureSelection)
         case ocrRequested(CaptureSelection)
-        case longCaptureRequested(CaptureSelection)
+        /// 长截图只要屏幕帧和选区：区域固定后由控制器实时抓帧，不需要冻结图与标注
+        case longCaptureRequested(DisplayFrame, CGRect)
         case cancelled
     }
 
@@ -98,10 +99,16 @@ final class SelectionOverlayController {
             return
         }
 
+        // 长截图只用屏幕帧与选区：不渲染标注，也不因裁切失败把会话取消掉
+        if case .longShot(let longFrame, let longRect, _) = request {
+            completion?(.longCaptureRequested(longFrame, longRect))
+            return
+        }
+
         let frame: DisplayFrame
         let rect: CGRect
         let annotations: [Annotation]
-        enum Kind { case confirm, save, pin, ocr, longShot }
+        enum Kind { case confirm, save, pin, ocr }
         let kind: Kind
         switch request {
         case .confirm(let confirmedFrame, let confirmedRect, let confirmedAnnotations):
@@ -124,11 +131,8 @@ final class SelectionOverlayController {
             rect = ocrRect
             annotations = ocrAnnotations
             kind = .ocr
-        case .longShot(let longFrame, let longRect, let longAnnotations):
-            frame = longFrame
-            rect = longRect
-            annotations = longAnnotations
-            kind = .longShot
+        case .longShot:
+            return
         }
 
         guard let selection = crop(frame: frame, rectInScreen: rect, annotations: annotations) else {
@@ -145,8 +149,6 @@ final class SelectionOverlayController {
             completion?(.pinRequested(selection))
         case .ocr:
             completion?(.ocrRequested(selection))
-        case .longShot:
-            completion?(.longCaptureRequested(selection))
         }
     }
 

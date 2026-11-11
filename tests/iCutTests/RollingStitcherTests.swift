@@ -52,6 +52,47 @@ func runRollingStitcherTests() {
     )
 }
 
+/// 已拼接内容的某一行被浮层、光标或动画覆盖时，不能因为单行锚点对不上就丢掉整帧。
+func runAnchorResilienceTests() {
+    let width = 40
+
+    guard let second = makeRowsImage(from: 60, count: 100, width: width) else {
+        expect(false, "构造锚点测试图失败")
+        return
+    }
+    let incoming = RollingStitcher.rowSignatures(of: second)
+
+    // 重叠段 40 行 = 已拼接的第 60~99 行；末行（第 99 行）被覆盖
+    guard let badLast = makeRowsImage(from: 0, count: 100, width: width, corruptRows: [99]) else {
+        expect(false, "构造锚点测试图失败")
+        return
+    }
+    expectEqual(
+        RollingStitcher.findOverlap(
+            existing: RollingStitcher.rowSignatures(of: badLast),
+            incoming: incoming,
+            minOverlap: 40
+        ),
+        RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),
+        "已拼接末行异常时仍应匹配到重叠"
+    )
+
+    // 末行与重叠段中部（第 80 行）同时异常：采样锚点里仍有干净行可用
+    guard let badLastAndMiddle = makeRowsImage(from: 0, count: 100, width: width, corruptRows: [80, 99]) else {
+        expect(false, "构造锚点测试图失败")
+        return
+    }
+    expectEqual(
+        RollingStitcher.findOverlap(
+            existing: RollingStitcher.rowSignatures(of: badLastAndMiddle),
+            incoming: incoming,
+            minOverlap: 40
+        ),
+        RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),
+        "末行与中部行同时异常时仍应匹配到重叠"
+    )
+}
+
 func runStitchAccumulatorTests() {
     let width = 40
 
@@ -83,10 +124,28 @@ func runStitchAccumulatorTests() {
 
     expectEqual(accumulator.append(third), .unchanged("画面未滚动"), "重复帧不追加")
 
+    // 高度上限按剩余容量裁切，不整帧丢弃
     let limited = StitchAccumulator(maxHeight: 120)
     expectEqual(limited.append(first), .appended(addedRows: 100), "上限内首帧正常加入")
-    expectEqual(limited.append(second), .unchanged("已达高度上限"), "超出上限拒绝追加")
-    expectEqual(limited.height, 100, "超限后高度不变")
+    expectEqual(limited.append(second), .appended(addedRows: 20), "超限帧裁到剩余容量后追加")
+    expectEqual(limited.height, 120, "高度恰好到上限")
+    expectEqual(limited.append(third), .unchanged("已达高度上限"), "到上限后停止追加")
+
+    // 帧宽差 1px 不应整帧丢弃，按首帧宽度裁齐
+    guard let narrowFrame = makeRowsImage(from: 60, count: 100, width: width - 1),
+          let tooWideFrame = makeRowsImage(from: 60, count: 100, width: width + 3) else {
+        expect(false, "构造宽度容差测试图失败")
+        return
+    }
+    let tolerantWidth = StitchAccumulator(maxHeight: 20000)
+    expectEqual(tolerantWidth.append(first), .appended(addedRows: 100), "宽度容差：首帧正常加入")
+    expectEqual(tolerantWidth.append(narrowFrame), .appended(addedRows: 60), "帧宽差 1px 仍可追加")
+    expectEqual(tolerantWidth.width, width, "拼接宽度保持首帧宽度")
+    expectEqual(
+        tolerantWidth.append(tooWideFrame),
+        .unchanged("画面尺寸变化"),
+        "帧宽差 3px 视为画面尺寸变化"
+    )
 }
 
 /// 页面顶部有粘性导航栏时：头部只保留一份，正文连续拼接。
@@ -217,7 +276,7 @@ private func makeFrame(header: CGImage?, body: CGImage) -> CGImage? {
     return context.makeImage()
 }
 
-/// 逐行渐变测试图：每行颜色由行号决定，行与行差异明显，便于验证重叠与拼接顺序
+/// 逐行渐变测试图：每行颜色由行号决定，行与行亮度差明显大于容忍阈值，便于精确定位重叠
 private func makeRowsImage(from start: Int, count: Int, width: Int, corruptRows: Set<Int> = []) -> CGImage? {
     guard width > 0, count > 0 else { return nil }
     let bytesPerRow = width * 4
@@ -226,9 +285,9 @@ private func makeRowsImage(from start: Int, count: Int, width: Int, corruptRows:
     for row in 0..<count {
         let index = start + row
         let corrupt = corruptRows.contains(row)
-        let red = UInt8(index % 251)
-        let green = UInt8((index * 7 + 40) % 256)
-        let blue = UInt8((index * 13 + 90) % 256)
+        let red = UInt8((index * 37) % 251)
+        let green = UInt8((index * 23 + 40) % 256)
+        let blue = UInt8((index * 17 + 90) % 256)
         for x in 0..<width {
             let offset = row * bytesPerRow + x * 4
             data[offset] = corrupt ? 255 - red : red

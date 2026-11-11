@@ -37,20 +37,8 @@ final class LongCapturePanel: NSPanel {
         setUpContent()
     }
 
-    /// 面板不抢浏览器焦点：用户还要继续滚动页面
-    override var canBecomeKey: Bool { true }
-
-    override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 53: // Esc
-            onCancel?()
-        case 36, 76: // Return / Enter
-            onFinish?()
-        default:
-            super.keyDown(with: event)
-        }
-    }
-
+    /// 面板不抢浏览器焦点：用户还要继续滚动页面，键盘事件留在页面上。
+    /// 因此没有 Esc / 回车处理，结束会话只用面板上的「完成」「取消」按钮。
     func update(status: String, hint: String) {
         statusLabel.stringValue = status
         hintLabel.stringValue = hint

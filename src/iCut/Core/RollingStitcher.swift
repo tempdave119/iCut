@@ -117,7 +117,8 @@ enum RollingStitcher {
         return nil
     }
 
-    /// 从最大重叠往下找：先用末行做锚点定位候选，再整段核对
+    /// 从最大重叠往下找：先用少量采样行做预筛，命中后整段核对。
+    /// 预筛不能只看末行：底边一行被浮层、光标或动画覆盖时，单行锚点会让整帧被丢弃。
     private static func match(
         existing: [RowSignature],
         incoming: [RowSignature],
@@ -125,12 +126,17 @@ enum RollingStitcher {
         minOverlap: Int,
         tolerant: Bool
     ) -> Int? {
-        guard let anchor = existing.last else { return nil }
         let maxOverlap = min(existing.count, incoming.count - skip)
         guard maxOverlap >= minOverlap else { return nil }
 
         for overlap in stride(from: maxOverlap, through: minOverlap, by: -1) {
-            guard rowMatches(anchor, incoming[skip + overlap - 1], tolerant: tolerant) else { continue }
+            guard anchorsMatch(
+                existing: existing,
+                incoming: incoming,
+                skip: skip,
+                overlap: overlap,
+                tolerant: tolerant
+            ) else { continue }
             if overlapMatches(
                 existing: existing,
                 incoming: incoming,
@@ -142,6 +148,25 @@ enum RollingStitcher {
             }
         }
         return nil
+    }
+
+    /// 在重叠段内取三个采样行（中部、末行、1/4 处），任一命中即进入整段核对。
+    /// 预筛只负责减少整段比对的次数，正确性由 `overlapMatches` 保证。
+    private static func anchorsMatch(
+        existing: [RowSignature],
+        incoming: [RowSignature],
+        skip: Int,
+        overlap: Int,
+        tolerant: Bool
+    ) -> Bool {
+        let start = existing.count - overlap
+        let offsets = [overlap / 2, overlap - 1, overlap / 4]
+        for offset in offsets {
+            if rowMatches(existing[start + offset], incoming[skip + offset], tolerant: tolerant) {
+                return true
+            }
+        }
+        return false
     }
 
     private static func overlapMatches(
