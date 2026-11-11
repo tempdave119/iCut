@@ -289,7 +289,7 @@ final class SelectionOverlayView: NSView {
         case .undo:
             drawTintedSymbol("arrow.uturn.backward", in: rect, color: iconColor, pointSize: 15)
         case .longShot:
-            drawGlyph("长", in: rect, color: iconColor, weight: .medium)
+            drawTintedSymbol("arrow.up.and.down", in: rect, color: iconColor, pointSize: 15)
         case .ocr:
             drawTintedSymbol("text.viewfinder", in: rect, color: iconColor, pointSize: 15)
         case .save:

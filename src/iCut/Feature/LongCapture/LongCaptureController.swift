@@ -14,6 +14,8 @@ final class LongCaptureController {
     private let onFinish: (Output?) -> Void
 
     private var panel: LongCapturePanel?
+    /// 选区提示框：覆盖层关掉后让用户仍能看到正在采集的区域
+    private var guide: LongCaptureGuideWindow?
     private var accumulator: StitchAccumulator
     private var timer: Timer?
     private var isTicking = false
@@ -41,6 +43,10 @@ final class LongCaptureController {
     func start() {
         guard !isActive else { return }
         isActive = true
+
+        let guide = LongCaptureGuideWindow(rectInAppKit: appKitRect)
+        guide.orderFront(nil)
+        self.guide = guide
 
         let panel = LongCapturePanel()
         panel.onFinish = { [weak self] in self?.finish(commit: true) }
@@ -149,6 +155,11 @@ final class LongCaptureController {
             panel.orderOut(nil)
             panel.close()
             self.panel = nil
+        }
+        if let guide {
+            guide.orderOut(nil)
+            guide.close()
+            self.guide = nil
         }
 
         guard commit, let image = accumulator.makeImage() else {
