@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeConfig = HotKeyStore.load()
     private let selectionController = SelectionOverlayController()
     private let pinController = PinController()
+    private var longCapture: LongCaptureController?
     /// 每次启动最多向系统发起一次授权请求，避免反复触发系统弹框
     private var permissionRequestedThisLaunch = false
 
@@ -192,6 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("iCut: 已有截图会话进行中，忽略本次触发")
             return
         }
+        guard longCapture == nil else {
+            NSLog("iCut: 长截图进行中，忽略本次触发")
+            return
+        }
         guard ScreenCapturePermission.isGranted else {
             handleMissingPermission()
             return
@@ -249,6 +254,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .ocrRequested(let selection):
                 self.recognizeText(in: selection.image)
 
+            case .longCaptureRequested(let selection):
+                self.startLongCapture(selection)
+
             case .saveRequested(let selection):
                 let name = ImageSaver.defaultFileName()
                 if let url = ImageSaver.savePNG(
@@ -262,6 +270,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    // MARK: - 长截图
+
+    /// 长截图不复用冻结帧：按固定屏幕区域定时实时抓帧，用户自己滚动页面，完成时输出整图。
+    private func startLongCapture(_ selection: SelectionOverlayController.CaptureSelection) {
+        guard longCapture == nil else { return }
+        // 旧贴图会被抓进长图，会话期间先隐藏，结束再恢复
+        pinController.hideAllForCapture()
+
+        let controller = LongCaptureController(
+            frame: selection.frame,
+            rectInScreen: selection.rectInScreen
+        ) { [weak self] output in
+            guard let self else { return }
+            self.pinController.restoreAfterCapture()
+            self.longCapture = nil
+            guard let output else {
+                NSLog("iCut: 长截图已取消")
+                return
+            }
+            let copied = ClipboardService.copy(image: output.image, scale: output.scale)
+            AutoSaver.saveIfEnabled(image: output.image, scale: output.scale)
+            NSLog(
+                "iCut: 长截图 \(output.image.width)x\(output.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"
+            )
+        }
+        longCapture = controller
+        controller.start()
     }
 
     // MARK: - 文字识别

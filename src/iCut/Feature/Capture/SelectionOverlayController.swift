@@ -16,15 +16,17 @@ final class SelectionOverlayController {
         case saveRequested(CaptureSelection)
         case pinRequested(CaptureSelection)
         case ocrRequested(CaptureSelection)
+        case longCaptureRequested(CaptureSelection)
         case cancelled
     }
 
-    /// 用户结束会话的方式：确认、保存、贴图、识别文字，或取消（nil）
+    /// 用户结束会话的方式：确认、保存、贴图、识别文字、长截图，或取消（nil）
     private enum FinishRequest {
         case confirm(DisplayFrame, CGRect, [Annotation])
         case save(DisplayFrame, CGRect, [Annotation])
         case pin(DisplayFrame, CGRect, [Annotation])
         case ocr(DisplayFrame, CGRect, [Annotation])
+        case longShot(DisplayFrame, CGRect, [Annotation])
     }
 
     private var windows: [SelectionOverlayWindow] = []
@@ -57,6 +59,9 @@ final class SelectionOverlayController {
             }
             window.overlayView.onOCR = { [weak self] rect, annotations in
                 self?.finish(.ocr(frame, rect, annotations))
+            }
+            window.overlayView.onLongShot = { [weak self] rect, annotations in
+                self?.finish(.longShot(frame, rect, annotations))
             }
             window.overlayView.onCancel = { [weak self] in
                 self?.finish(nil)
@@ -96,7 +101,7 @@ final class SelectionOverlayController {
         let frame: DisplayFrame
         let rect: CGRect
         let annotations: [Annotation]
-        enum Kind { case confirm, save, pin, ocr }
+        enum Kind { case confirm, save, pin, ocr, longShot }
         let kind: Kind
         switch request {
         case .confirm(let confirmedFrame, let confirmedRect, let confirmedAnnotations):
@@ -119,6 +124,11 @@ final class SelectionOverlayController {
             rect = ocrRect
             annotations = ocrAnnotations
             kind = .ocr
+        case .longShot(let longFrame, let longRect, let longAnnotations):
+            frame = longFrame
+            rect = longRect
+            annotations = longAnnotations
+            kind = .longShot
         }
 
         guard let selection = crop(frame: frame, rectInScreen: rect, annotations: annotations) else {
@@ -135,6 +145,8 @@ final class SelectionOverlayController {
             completion?(.pinRequested(selection))
         case .ocr:
             completion?(.ocrRequested(selection))
+        case .longShot:
+            completion?(.longCaptureRequested(selection))
         }
     }
 

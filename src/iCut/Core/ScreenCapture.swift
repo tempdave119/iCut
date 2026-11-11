@@ -59,4 +59,13 @@ enum ScreenCapture {
         }
         return frames
     }
+
+    /// 抓取屏幕上的一块区域（Quartz 全局坐标，点）；
+    /// belowWindow 传长截图控制条的窗口号，可以把控制条排除在画面外。
+    static func captureRegion(_ rectInQuartz: CGRect, belowWindow windowID: CGWindowID = 0) -> CGImage? {
+        if windowID != 0 {
+            return CGWindowListCreateImage(rectInQuartz, .optionOnScreenBelowWindow, windowID, [.bestResolution])
+        }
+        return CGWindowListCreateImage(rectInQuartz, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
+    }
 }

@@ -36,6 +36,8 @@ runFileNameTemplateTests()
 runOCRTextAssemblerTests()
 runAutoSaverTests()
 runSettingsMigrationTests()
+runRollingStitcherTests()
+runStitchAccumulatorTests()
 
 print("")
 if failures == 0 {
