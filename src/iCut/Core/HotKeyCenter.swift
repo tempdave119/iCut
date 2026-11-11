@@ -21,7 +21,9 @@ final class HotKeyCenter {
     func register(_ config: HotKeyConfig, onTrigger: @escaping () -> Void) -> Bool {
         unregister()
         self.onTrigger = onTrigger
-        installHandlerIfNeeded()
+
+        // 事件处理器装不上时，热键即使注册成功也永远不会回调，必须当作失败处理
+        guard installHandlerIfNeeded() else { return false }
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x6943_7574), id: 1) // 'iCut'
         let status = RegisterEventHotKey(
@@ -34,6 +36,7 @@ final class HotKeyCenter {
         )
         guard status == noErr else {
             hotKeyRef = nil
+            NSLog("iCut: 注册快捷键 \(config.displayText) 失败，status=\(status)")
             return false
         }
         return true
@@ -46,8 +49,8 @@ final class HotKeyCenter {
         }
     }
 
-    private func installHandlerIfNeeded() {
-        guard eventHandler == nil else { return }
+    private func installHandlerIfNeeded() -> Bool {
+        if eventHandler != nil { return true }
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -55,7 +58,7 @@ final class HotKeyCenter {
         )
         // C 回调不能捕获上下文，实例通过 userData 传回
         let userData = Unmanaged.passUnretained(self).toOpaque()
-        _ = InstallEventHandler(
+        let status = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, _, userData in
                 guard let userData else { return OSStatus(eventNotHandledErr) }
@@ -68,5 +71,11 @@ final class HotKeyCenter {
             userData,
             &eventHandler
         )
+        guard status == noErr else {
+            NSLog("iCut: 安装热键事件处理器失败，status=\(status)")
+            eventHandler = nil
+            return false
+        }
+        return true
     }
 }

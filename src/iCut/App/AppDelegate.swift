@@ -71,13 +71,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentAlert(title: String, message: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "好")
-        alert.runModal()
+        // launch 阶段同步 runModal 会把启动流程堵住，菜单栏应用会表现为“点了没反应”
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
     }
 
     @objc private func openShortcutSettings() {
@@ -139,6 +142,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // 截图流程在 F-04 / F-05 接入，这里先保证热键与菜单入口可达
     @objc private func startCapture() {
-        NSLog("iCut: 截图流程尚未接入")
+        NSLog("iCut: 收到截图触发")
     }
 }
