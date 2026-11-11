@@ -46,7 +46,8 @@ enum ImageSaver {
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    private static func pngData(from image: CGImage, scale: CGFloat) -> Data? {
+    /// 编码成带点尺寸的 PNG 数据；保存面板与自动保存共用
+    static func pngData(from image: CGImage, scale: CGFloat) -> Data? {
         let rep = NSBitmapImageRep(cgImage: image)
         rep.size = NSSize(
             width: CGFloat(image.width) / scale,

@@ -1,12 +1,12 @@
 import AppKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var captureMenuItem: NSMenuItem?
-    private var shortcutMenuItem: NSMenuItem?
-    private var toolbarPositionItems: [ToolbarPosition: NSMenuItem] = [:]
     private let hotKeyCenter = HotKeyCenter()
     private var shortcutWindow: ShortcutRecorderWindow?
+    private var settingsWindow: SettingsWindow?
+    private var ocrWindow: OCRResultWindow?
     private var activeConfig = HotKeyStore.load()
     private let selectionController = SelectionOverlayController()
     private let pinController = PinController()
@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
         registerActiveHotKey()
+        // 贴图右键的「识别文字」与截图工具栏共用同一个识别服务
+        pinController.onRequestOCR = { [weak self] image in self?.recognizeText(in: image) }
         NSLog("iCut: 屏幕录制权限 = \(ScreenCapturePermission.isGranted)")
     }
 
@@ -37,10 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(captureItem)
         captureMenuItem = captureItem
 
-        let shortcutItem = NSMenuItem(title: "", action: #selector(openShortcutSettings), keyEquivalent: "")
+        let shortcutItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: "")
         shortcutItem.target = self
         menu.addItem(shortcutItem)
-        shortcutMenuItem = shortcutItem
 
         menu.addItem(.separator())
         let hideItem = NSMenuItem(title: "隐藏全部贴图", action: #selector(hideAllPins), keyEquivalent: "")
@@ -49,20 +50,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let showItem = NSMenuItem(title: "显示全部贴图", action: #selector(showAllPins), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
-
-        menu.addItem(.separator())
-        let positionItem = NSMenuItem(title: "工具栏位置", action: nil, keyEquivalent: "")
-        let positionMenu = NSMenu()
-        for position in ToolbarPosition.allCases {
-            let item = NSMenuItem(title: position.displayName, action: #selector(selectToolbarPosition(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = position.rawValue
-            positionMenu.addItem(item)
-            toolbarPositionItems[position] = item
-        }
-        positionItem.submenu = positionMenu
-        menu.addItem(positionItem)
-        menu.delegate = self
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出 iCut", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -74,7 +61,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateMenuTitles() {
         captureMenuItem?.title = "截图（\(activeConfig.displayText)）"
-        shortcutMenuItem?.title = "设置快捷键…（当前 \(activeConfig.displayText)）"
     }
 
     private func registerActiveHotKey() {
@@ -117,6 +103,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func openSettings() {
+        if let window = settingsWindow {
+            window.refreshHotKey(activeConfig)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = SettingsWindow()
+        window.refreshHotKey(activeConfig)
+        window.onRequestHotKeyEdit = { [weak self] in self?.openShortcutSettings() }
+        window.onClose = { [weak self] in self?.settingsWindow = nil }
+        settingsWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func openShortcutSettings() {
         if let window = shortcutWindow {
             NSApp.activate(ignoringOtherApps: true)
@@ -151,6 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 HotKeyStore.save(config)
                 self.activeConfig = config
                 self.updateMenuTitles()
+                self.settingsWindow?.refreshHotKey(config)
                 accepted = true
                 NSLog("iCut: 快捷键已更新为 \(config.displayText)")
                 window.close()
@@ -180,20 +184,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showAllPins() {
         pinController.showAll()
-    }
-
-    @objc private func selectToolbarPosition(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let position = ToolbarPosition(rawValue: raw) else { return }
-        ToolbarSettings.save(position)
-        NSLog("iCut: 工具栏位置 = \(position.displayName)")
-    }
-
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        let current = ToolbarSettings.load()
-        for (position, item) in toolbarPositionItems {
-            item.state = (position == current) ? .on : .off
-        }
     }
 
     // 截图流程：幂等检查 → 权限 → 抓屏 → 覆盖层框选
@@ -242,6 +232,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSLog(
                     "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"
                 )
+                // 自动保存默认关闭；开关与目录由设置面板维护
+                AutoSaver.saveIfEnabled(
+                    image: selection.image,
+                    scale: selection.frame.backingScaleFactor
+                )
 
             case .pinRequested(let selection):
                 self.pinController.pin(
@@ -250,6 +245,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     origin: Self.pinOrigin(for: selection)
                 )
                 NSLog("iCut: 已贴图，共 \(self.pinController.count) 张")
+
+            case .ocrRequested(let selection):
+                self.recognizeText(in: selection.image)
 
             case .saveRequested(let selection):
                 let name = ImageSaver.defaultFileName()
@@ -264,6 +262,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+    }
+
+    // MARK: - 文字识别
+
+    private func recognizeText(in image: CGImage) {
+        NSLog("iCut: 开始识别文字")
+        TextRecognizer.recognize(image: image) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let text):
+                NSLog("iCut: 识别到 \(text.count) 个字符")
+                self.presentOCRResult(text: text, message: "\(text.count) 个字符 · 可编辑后复制")
+            case .failure(let error):
+                let message = error.errorDescription ?? "识别失败"
+                NSLog("iCut: 文字识别未完成 — \(message)")
+                self.presentOCRResult(text: "", message: message)
+            }
+        }
+    }
+
+    private func presentOCRResult(text: String, message: String) {
+        if ocrWindow == nil {
+            let window = OCRResultWindow()
+            window.onClose = { [weak self] in self?.ocrWindow = nil }
+            ocrWindow = window
+        }
+        guard let window = ocrWindow else { return }
+        window.show(text: text, message: message)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     /// 选区是屏内左上原点坐标，贴图窗口需要左下原点的全局坐标

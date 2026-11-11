@@ -6,6 +6,8 @@ final class PinController {
     private var hiddenForCapture: [PinWindow] = []
 
     var count: Int { pins.count }
+    /// 贴图右键「识别文字」的出口，由 AppDelegate 接到统一的识别服务
+    var onRequestOCR: ((CGImage) -> Void)?
 
     func pin(image: CGImage, scale: CGFloat, origin: CGPoint) {
         let window = PinWindow(image: image, scale: scale, origin: origin)
@@ -13,6 +15,7 @@ final class PinController {
             guard let self, let window else { return }
             self.pins.removeAll { $0 === window }
         }
+        window.onRequestOCR = { [weak self] image in self?.onRequestOCR?(image) }
         pins.append(window)
         // 不抢焦点：用户通常接着做别的事
         window.orderFront(nil)

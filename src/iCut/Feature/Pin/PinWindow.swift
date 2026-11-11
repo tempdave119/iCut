@@ -6,6 +6,8 @@ final class PinWindow: NSWindow, NSWindowDelegate {
     private let pinView: PinContentView
     /// 窗口关闭后通知控制器从列表里移除
     var onClose: (() -> Void)?
+    /// 识别贴图上的文字；图像由内容视图持有，旋转后也取到最新一张
+    var onRequestOCR: ((CGImage) -> Void)?
 
     init(image: CGImage, scale: CGFloat, origin: CGPoint) {
         let pointSize = CGSize(
@@ -31,6 +33,7 @@ final class PinWindow: NSWindow, NSWindowDelegate {
         contentView = pinView
 
         pinView.onRequestClose = { [weak self] in self?.close() }
+        pinView.onRequestOCR = { [weak self] image in self?.onRequestOCR?(image) }
     }
 
     // 需要接收 Esc 与滚轮，无边框窗口默认不接受键盘
@@ -47,6 +50,8 @@ final class PinContentView: NSView {
     private var dragOffset: CGPoint?
 
     var onRequestClose: (() -> Void)?
+    /// 贴图上的文字识别由控制器转给 AppDelegate，与截图工具栏共用同一服务
+    var onRequestOCR: ((CGImage) -> Void)?
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -186,6 +191,7 @@ final class PinContentView: NSView {
         menu.addItem(opacityItem)
 
         menu.addItem(makeItem("旋转 90°", #selector(rotateAction)))
+        menu.addItem(makeItem("识别文字", #selector(recognizeText)))
         menu.addItem(makeItem("保存…", #selector(saveImage)))
         menu.addItem(.separator())
         menu.addItem(makeItem("关闭", #selector(closePin)))
@@ -208,6 +214,10 @@ final class PinContentView: NSView {
 
     @objc private func rotateAction() {
         rotate90()
+    }
+
+    @objc private func recognizeText() {
+        onRequestOCR?(image)
     }
 
     @objc private func setOpacity(_ sender: NSMenuItem) {

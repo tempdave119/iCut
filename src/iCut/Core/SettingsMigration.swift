@@ -12,9 +12,16 @@ enum SettingsMigration {
         "toolbar.position",
         "save.lastDirectory"
     ]
+    private static let templateMarkerKey = "migration.autoSaveTemplateV2"
+    private static let legacyAutoSaveTemplate = "iCut {date} {time}"
 
     /// 必须在创建 AppDelegate 之前调用：HotKeyStore.load() 在对象初始化时就读取配置
     static func runIfNeeded() {
+        migrateBundleIdentityIfNeeded()
+        migrateAutoSaveTemplateIfNeeded()
+    }
+
+    private static func migrateBundleIdentityIfNeeded() {
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: markerKey) == nil else { return }
         defaults.set(true, forKey: markerKey)
@@ -25,5 +32,20 @@ enum SettingsMigration {
                 defaults.set(value, forKey: key)
             }
         }
+    }
+
+    /// 自动保存默认命名从 `iCut {date} {time}` 改为 `iCut-{timestamp}`；
+    /// 只迁移“等于旧默认值”的配置，用户自己改过的模板保持原样。
+    private static func migrateAutoSaveTemplateIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: templateMarkerKey) == nil else { return }
+        defaults.set(true, forKey: templateMarkerKey)
+
+        let templateKey = "autosave.nameTemplate"
+        guard let stored = defaults.string(forKey: templateKey),
+              stored.trimmingCharacters(in: .whitespacesAndNewlines) == legacyAutoSaveTemplate else {
+            return
+        }
+        defaults.set(FileNameTemplate.defaultTemplate, forKey: templateKey)
     }
 }

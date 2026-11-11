@@ -18,10 +18,11 @@ enum ToolbarPosition: String, CaseIterable {
 enum ToolbarSettings {
     private static let key = "toolbar.position"
 
+    /// 默认贴着选区显示；下方放不下时工具栏会自己翻到选区上方
     static func load() -> ToolbarPosition {
         guard let raw = UserDefaults.standard.string(forKey: key),
               let position = ToolbarPosition(rawValue: raw) else {
-            return .fixedBottom
+            return .followSelection
         }
         return position
     }

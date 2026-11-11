@@ -35,6 +35,7 @@ final class SelectionOverlayView: NSView {
         case tool(Annotation.Kind)
         case colors
         case undo
+        case ocr
         case save
         case pin
         case cancel
@@ -97,6 +98,7 @@ final class SelectionOverlayView: NSView {
     var onConfirm: ((CGRect, [Annotation]) -> Void)?
     var onSave: ((CGRect, [Annotation]) -> Void)?
     var onPin: ((CGRect, [Annotation]) -> Void)?
+    var onOCR: ((CGRect, [Annotation]) -> Void)?
     var onCancel: (() -> Void)?
 
     override var isFlipped: Bool { true }
@@ -146,14 +148,15 @@ final class SelectionOverlayView: NSView {
     private static let barItemSpacing: CGFloat = 4
     private static let barPadding: CGFloat = 10
     private static let barGap: CGFloat = 14
-    /// 工具区固定 6 项（形状 + 4 个独立工具 + 颜色），之后是动作区
-    private static let toolbarSectionCount = 6
+    /// 工具区 7 项（形状 + 4 个独立工具 + 文字识别 + 颜色），之后是动作区
+    private static let toolbarSectionCount = 7
     private static let shapeTools: [Annotation.Kind] = [.rectangle, .ellipse, .line, .arrow]
 
     private var barActions: [BarAction] {
         var actions: [BarAction] = [.shapes]
         actions += [.tool(.freehand), .tool(.text), .tool(.mosaic), .tool(.number)]
-        actions += [.colors, .undo, .save, .pin, .cancel, .confirm]
+        // 识别文字属于工具区，放在序号之后、颜色之前；工具区与动作区之间由 barGap 分隔
+        actions += [.ocr, .colors, .undo, .save, .pin, .cancel, .confirm]
         return actions
     }
 
@@ -283,6 +286,8 @@ final class SelectionOverlayView: NSView {
             drawColorDot(in: rect)
         case .undo:
             drawTintedSymbol("arrow.uturn.backward", in: rect, color: iconColor, pointSize: 15)
+        case .ocr:
+            drawTintedSymbol("text.viewfinder", in: rect, color: iconColor, pointSize: 15)
         case .save:
             drawTintedSymbol("square.and.arrow.down", in: rect, color: iconColor, pointSize: 15)
         case .pin:
@@ -547,6 +552,7 @@ final class SelectionOverlayView: NSView {
             return "颜色\n点击在工具条下方展开调色板"
         case .undo:
             return annotations.isEmpty ? "撤销：暂无可撤销的标注" : "撤销（⌘Z）"
+        case .ocr: return "识别文字\n把选区内的文字提取为可编辑文本"
         case .save: return "保存为 PNG（⌘S）"
         case .pin: return "贴到屏幕上"
         case .cancel: return "取消截图（Esc）"
@@ -1006,6 +1012,10 @@ final class SelectionOverlayView: NSView {
         case .undo:
             guard !annotations.isEmpty else { return }
             undo()
+        case .ocr:
+            if let selection = completedRect ?? (state.isUsable ? state.rect : nil) {
+                onOCR?(selection, annotations)
+            }
         case .save:
             if let selection = completedRect ?? (state.isUsable ? state.rect : nil) {
                 onSave?(selection, annotations)

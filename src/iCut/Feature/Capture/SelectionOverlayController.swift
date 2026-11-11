@@ -15,14 +15,16 @@ final class SelectionOverlayController {
         case confirmed(CaptureSelection)
         case saveRequested(CaptureSelection)
         case pinRequested(CaptureSelection)
+        case ocrRequested(CaptureSelection)
         case cancelled
     }
 
-    /// 用户结束会话的方式：确认、保存、贴图，或取消（nil）
+    /// 用户结束会话的方式：确认、保存、贴图、识别文字，或取消（nil）
     private enum FinishRequest {
         case confirm(DisplayFrame, CGRect, [Annotation])
         case save(DisplayFrame, CGRect, [Annotation])
         case pin(DisplayFrame, CGRect, [Annotation])
+        case ocr(DisplayFrame, CGRect, [Annotation])
     }
 
     private var windows: [SelectionOverlayWindow] = []
@@ -52,6 +54,9 @@ final class SelectionOverlayController {
             }
             window.overlayView.onPin = { [weak self] rect, annotations in
                 self?.finish(.pin(frame, rect, annotations))
+            }
+            window.overlayView.onOCR = { [weak self] rect, annotations in
+                self?.finish(.ocr(frame, rect, annotations))
             }
             window.overlayView.onCancel = { [weak self] in
                 self?.finish(nil)
@@ -91,7 +96,7 @@ final class SelectionOverlayController {
         let frame: DisplayFrame
         let rect: CGRect
         let annotations: [Annotation]
-        enum Kind { case confirm, save, pin }
+        enum Kind { case confirm, save, pin, ocr }
         let kind: Kind
         switch request {
         case .confirm(let confirmedFrame, let confirmedRect, let confirmedAnnotations):
@@ -109,6 +114,11 @@ final class SelectionOverlayController {
             rect = pinnedRect
             annotations = pinnedAnnotations
             kind = .pin
+        case .ocr(let ocrFrame, let ocrRect, let ocrAnnotations):
+            frame = ocrFrame
+            rect = ocrRect
+            annotations = ocrAnnotations
+            kind = .ocr
         }
 
         guard let selection = crop(frame: frame, rectInScreen: rect, annotations: annotations) else {
@@ -123,6 +133,8 @@ final class SelectionOverlayController {
             completion?(.saveRequested(selection))
         case .pin:
             completion?(.pinRequested(selection))
+        case .ocr:
+            completion?(.ocrRequested(selection))
         }
     }
 
