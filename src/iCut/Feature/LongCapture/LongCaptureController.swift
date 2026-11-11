@@ -17,6 +17,7 @@ final class LongCaptureController {
     private var accumulator: StitchAccumulator
     private var timer: Timer?
     private var isTicking = false
+    private var didLogFirstFrame = false
     private(set) var isActive = false
 
     init(
@@ -43,7 +44,10 @@ final class LongCaptureController {
         self.panel = panel
         panel.orderFront(nil)
         panel.place(below: appKitRect, in: frame.screenFrame)
-        panel.update(status: "已拼接 0 px")
+        panel.update(
+            status: "已拼接 0 px",
+            hint: "把鼠标移到要截的页面上，向下滚动，高度会自动增长"
+        )
         NSLog("iCut: 长截图开始 rect=\(rectInScreen)")
 
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -79,33 +83,43 @@ final class LongCaptureController {
 
         // 控制面板自己不能进画面：抓屏时只取它下方的窗口
         let belowWindow = CGWindowID(panel?.windowNumber ?? 0)
-        guard let raw = ScreenCapture.captureRegion(quartzRect, belowWindow: belowWindow) else {
+        guard let image = ScreenCapture.captureRegion(quartzRect, belowWindow: belowWindow) else {
             NSLog("iCut: 长截图抓帧失败，稍后重试")
+            panel?.update(status: "抓帧失败", hint: "仍在重试；若一直失败，请确认屏幕录制权限")
             return
         }
-        let image = normalized(raw)
-        guard let image else {
-            NSLog("iCut: 长截图帧尺寸异常，跳过本次")
-            return
+        if !didLogFirstFrame {
+            didLogFirstFrame = true
+            NSLog("iCut: 长截图首帧 \(image.width)x\(image.height)px")
         }
 
         switch accumulator.append(image) {
         case .appended(let rows):
-            panel?.update(status: "已拼接 \(accumulator.height) px（本轮 +\(rows)）")
+            panel?.update(
+                status: "已拼接 \(accumulator.height) px",
+                hint: "继续向下滚动页面；拼够后点「完成」（本轮 +\(rows) px）"
+            )
         case .unchanged(let reason):
-            panel?.update(status: "已拼接 \(accumulator.height) px · \(reason)")
+            panel?.update(
+                status: "已拼接 \(accumulator.height) px · \(reason)",
+                hint: Self.hint(for: reason)
+            )
         }
     }
 
-    /// 抓屏结果像素尺寸偶尔会和请求的矩形差一点，裁到期望尺寸，保证每帧同宽同高
-    private func normalized(_ image: CGImage) -> CGImage? {
-        let expected = ScreenGeometry.pixelRect(fromPoint: rectInScreen, scale: frame.backingScaleFactor)
-        let width = Int(expected.width)
-        let height = Int(expected.height)
-        guard width > 0, height > 0 else { return nil }
-        guard image.width >= width, image.height >= height else { return nil }
-        if image.width == width, image.height == height { return image }
-        return image.cropping(to: CGRect(x: 0, y: 0, width: width, height: height))
+    private static func hint(for reason: String) -> String {
+        switch reason {
+        case "画面未滚动":
+            return "没检测到滚动：把鼠标放到页面上向下滚动"
+        case "未找到重叠区域":
+            return "衔接不上：滚动慢一点，或避开动画 / 视频区域"
+        case "已达高度上限":
+            return "已达 20000px 上限，点「完成」输出当前长图"
+        case "画面尺寸变化":
+            return "画面尺寸变了，已跳过该帧"
+        default:
+            return "继续滚动页面；拼够后点「完成」"
+        }
     }
 
     private func finish(commit: Bool) {

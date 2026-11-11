@@ -6,11 +6,11 @@ final class LongCapturePanel: NSPanel {
     var onCancel: (() -> Void)?
 
     private let statusLabel = NSTextField(labelWithString: "")
-    private let hintLabel = NSTextField(labelWithString: "滚动页面继续采集；完成后点「完成」")
+    private let hintLabel = NSTextField(labelWithString: "")
 
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 372, height: 78),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 96),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -34,8 +34,9 @@ final class LongCapturePanel: NSPanel {
     /// 面板不抢浏览器焦点：用户还要继续滚动页面
     override var canBecomeKey: Bool { true }
 
-    func update(status: String) {
+    func update(status: String, hint: String) {
         statusLabel.stringValue = status
+        hintLabel.stringValue = hint
     }
 
     /// 优先放在选区下方，放不下就放到上方；左右不越界
@@ -60,10 +61,11 @@ final class LongCapturePanel: NSPanel {
         effect.layer?.masksToBounds = true
         contentView = effect
 
-        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        hintLabel.font = .systemFont(ofSize: 11)
+        statusLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        hintLabel.font = .systemFont(ofSize: 12)
         hintLabel.textColor = .secondaryLabelColor
-        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.maximumNumberOfLines = 2
+        hintLabel.lineBreakMode = .byWordWrapping
 
         let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancelTapped))
         cancelButton.bezelStyle = .rounded
@@ -87,9 +89,10 @@ final class LongCapturePanel: NSPanel {
         effect.addSubview(row)
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 16),
-            row.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -16),
-            row.centerYAnchor.constraint(equalTo: effect.centerYAnchor)
+            row.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 18),
+            row.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -18),
+            row.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+            text.widthAnchor.constraint(equalToConstant: 250)
         ])
     }
 

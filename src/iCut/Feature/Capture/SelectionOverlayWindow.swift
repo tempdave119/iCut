@@ -289,7 +289,7 @@ final class SelectionOverlayView: NSView {
         case .undo:
             drawTintedSymbol("arrow.uturn.backward", in: rect, color: iconColor, pointSize: 15)
         case .longShot:
-            drawTintedSymbol("arrow.up.and.down", in: rect, color: iconColor, pointSize: 15)
+            drawGlyph("长", in: rect, color: iconColor, weight: .medium)
         case .ocr:
             drawTintedSymbol("text.viewfinder", in: rect, color: iconColor, pointSize: 15)
         case .save:
@@ -556,7 +556,7 @@ final class SelectionOverlayView: NSView {
             return "颜色\n点击在工具条下方展开调色板"
         case .undo:
             return annotations.isEmpty ? "撤销：暂无可撤销的标注" : "撤销（⌘Z）"
-        case .longShot: return "长截图\n框选区域后滚动页面，自动拼接成长图"
+        case .longShot: return "长截图\n点击后按提示滚动页面，最后点「完成」输出长图"
         case .ocr: return "识别文字\n把选区内的文字提取为可编辑文本"
         case .save: return "保存为 PNG（⌘S）"
         case .pin: return "贴到屏幕上"
