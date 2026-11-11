@@ -1,0 +1,58 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # 打 tag 时创建 Release 需要写权限
+
+jobs:
+  macos-app:
+    # 用 arm64 runner 交叉编译出 universal 包；如需复现旧环境可改回 macos-13
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          swift --version
+          xcodebuild -version | head -1
+
+      - name: 构建 universal .app
+        run: |
+          chmod +x scripts/build-app.sh
+          ./scripts/build-app.sh --universal
+
+      - name: 校验产物
+        run: |
+          test -x dist/iCut.app/Contents/MacOS/iCut
+          lipo -info dist/iCut.app/Contents/MacOS/iCut
+          codesign -dv dist/iCut.app 2>&1 | head -5
+
+      - name: 打包 zip
+        run: |
+          VERSION="${GITHUB_REF_NAME//\//-}"
+          ditto -c -k --keepParent dist/iCut.app "dist/iCut-${VERSION}.zip"
+          shasum -a 256 dist/*.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iCut-macos
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: 发布到 Release（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
