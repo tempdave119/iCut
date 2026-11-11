@@ -11,8 +11,6 @@ import CoreGraphics
 enum RollingStitcher {
     /// 一行切成多少块；块越少越抗噪，但行与行要能区分开，96 块 + 8 位均值在真实页面上足够
     private static let blocksPerRow = 96
-    /// 量化：保留 8 位均值，不再粗化（粗化会让相邻行变得一模一样，重叠定位会错位）
-    private static let quantizationShift: UInt8 = 0
     /// 块亮度差超过这个值算“不同”（容忍亚像素偏移带来的轻微抗锯齿差异）
     private static let blockDifferenceThreshold = 8
     /// 一帧里最多允许多少行“固定不动”的头部（粘性导航）
@@ -46,6 +44,7 @@ enum RollingStitcher {
         for row in 0..<buffer.height {
             let rowStart = row * buffer.bytesPerRow
             var signature = [UInt8](repeating: 0, count: blocksPerRow)
+            // 不做亮度粗化：粗化会让相邻行指纹变得一模一样，重叠定位会错位
             for block in 0..<blocksPerRow {
                 let blockStart = startX + block * blockWidth
                 let blockEnd = min(endX, blockStart + blockWidth)
@@ -62,7 +61,7 @@ enum RollingStitcher {
                     count += 1
                     x += 1
                 }
-                signature[block] = UInt8((sum / max(1, count)) >> Int(quantizationShift))
+                signature[block] = UInt8(sum / max(1, count))
             }
             signatures.append(signature)
         }
