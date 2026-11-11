@@ -134,12 +134,25 @@ final class SelectionOverlayView: NSView {
             + Self.barPadding * 2
             + Self.barGap * 2
         let height = Self.barItemSize + Self.barPadding * 2
-        return CGRect(
-            x: (bounds.width - width) / 2,
-            y: bounds.height - height - 36,
-            width: width,
-            height: height
-        )
+
+        guard let selection = completedRect ?? (state.isUsable ? state.rect : nil) else {
+            return CGRect(x: (bounds.width - width) / 2, y: bounds.height - height - 36, width: width, height: height)
+        }
+
+        // 默认贴选区下方；下方放不下翻到上方，再放不下就贴选区内底部
+        var originX = selection.midX - width / 2
+        var originY = selection.maxY + 12
+        if originY + height > bounds.height - 8 {
+            originY = selection.minY - height - 12
+        }
+        if originY < 8 {
+            originY = max(8, selection.maxY - height - 12)
+        }
+
+        originX = min(max(8, originX), max(8, bounds.width - width - 8))
+        originY = min(max(8, originY), max(8, bounds.height - height - 8))
+
+        return CGRect(x: originX, y: originY, width: width, height: height)
     }
 
     /// 每个按钮的矩形；工具与颜色之间、颜色与动作之间各留一个 gap
