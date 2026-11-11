@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutWindow: ShortcutRecorderWindow?
     private var activeConfig = HotKeyStore.load()
     private let selectionController = SelectionOverlayController()
+    private let pinController = PinController()
     /// 每次启动最多向系统发起一次授权请求，避免反复触发系统弹框
     private var permissionRequestedThisLaunch = false
 
@@ -163,21 +164,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func performCapture() {
         guard !selectionController.isActive else { return }
 
+        // 已有贴图不能进冻结帧，否则会把自己也截进去
+        pinController.hideAllForCapture()
+
         let frames = ScreenCapture.captureAllScreens()
         guard !frames.isEmpty else {
+            pinController.restoreAfterCapture()
             presentAlert(title: "截图失败", message: "未能抓取屏幕画面。请确认「屏幕录制」权限已勾选，并重启 iCut 后重试。")
             return
         }
 
-        selectionController.begin(frames: frames) { selection in
+        selectionController.begin(frames: frames) { [weak self] selection in
+            guard let self else { return }
+            self.pinController.restoreAfterCapture()
+
             guard let selection else {
                 NSLog("iCut: 截图已取消")
                 return
             }
+
+            let copied = ClipboardService.copy(
+                image: selection.image,
+                scale: selection.frame.backingScaleFactor
+            )
+            self.pinController.pin(
+                image: selection.image,
+                scale: selection.frame.backingScaleFactor,
+                origin: Self.pinOrigin(for: selection)
+            )
             NSLog(
-                "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px"
+                "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")，贴图 \(self.pinController.count) 张"
             )
         }
+    }
+
+    /// 选区是屏内左上原点坐标，贴图窗口需要左下原点的全局坐标
+    private static func pinOrigin(for selection: SelectionOverlayController.CaptureSelection) -> CGPoint {
+        let screenFrame = selection.frame.screenFrame
+        let height = CGFloat(selection.image.height) / selection.frame.backingScaleFactor
+        return CGPoint(
+            x: screenFrame.minX + selection.rectInScreen.minX,
+            y: screenFrame.maxY - selection.rectInScreen.minY - height
+        )
     }
 
     /// 首次触发只让系统登记（用户看到系统框），再次触发才弹自有引导，避免两个窗口叠在一起

@@ -119,11 +119,19 @@ final class SelectionOverlayView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeKey()
+        let point = convert(event.locationInWindow, from: nil)
+
         if event.clickCount == 2, let selection = confirmedSelection {
             onConfirm?(selection)
             return
         }
-        let point = convert(event.locationInWindow, from: nil)
+
+        // 已有选区时，在选区内单击即确认；在选区外按下则重新框选
+        if let selection = completedRect, selection.contains(point) {
+            onConfirm?(selection)
+            return
+        }
+
         state.begin(at: point)
         needsDisplay = true
     }
