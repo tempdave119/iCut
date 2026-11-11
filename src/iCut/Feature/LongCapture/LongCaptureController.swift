@@ -18,6 +18,8 @@ final class LongCaptureController {
     private var timer: Timer?
     private var isTicking = false
     private var didLogFirstFrame = false
+    private var lastStatusLog = Date.distantPast
+    private var lastReason = "等待首帧"
     /// 采集期间禁止 App Nap，否则窗口不活跃时定时器会被节流，看起来“怎么滚都不动”
     private var activity: NSObjectProtocol?
     private(set) var isActive = false
@@ -98,22 +100,31 @@ final class LongCaptureController {
 
         switch accumulator.append(image) {
         case .appended(let rows):
+            lastReason = "已追加 +\(rows)"
             panel?.update(
                 status: "已拼接 \(accumulator.height) px",
                 hint: "继续向下滚动页面；拼够后点「完成」（本轮 +\(rows) px）"
             )
         case .unchanged(let reason):
+            lastReason = reason
             panel?.update(
                 status: "已拼接 \(accumulator.height) px · \(reason)",
                 hint: Self.hint(for: reason)
             )
+        }
+
+        // 每秒记一次状态，便于事后判断到底是“页面没滚”还是“匹配不上”
+        if Date().timeIntervalSince(lastStatusLog) > 1 {
+            lastStatusLog = Date()
+            NSLog("iCut: 长截图状态 height=\(accumulator.height) \(lastReason)")
+            lastReason = "等待中"
         }
     }
 
     private static func hint(for reason: String) -> String {
         switch reason {
         case "画面未滚动":
-            return "没检测到滚动：把鼠标放到页面上向下滚动"
+            return "没检测到滚动：先点一下页面再滚，或确认这块区域能滚"
         case "未找到重叠区域":
             return "衔接不上：滚动慢一点，或避开动画 / 视频区域"
         case "已达高度上限":

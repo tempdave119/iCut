@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let selectionController = SelectionOverlayController()
     private let pinController = PinController()
     private var longCapture: LongCaptureController?
+    /// 截图前的前台应用：长截图期间要把焦点还回去，否则页面可能滚不动
+    private var appBeforeCapture: NSRunningApplication?
     /// 每次启动最多向系统发起一次授权请求，避免反复触发系统弹框
     private var permissionRequestedThisLaunch = false
 
@@ -201,6 +203,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             handleMissingPermission()
             return
         }
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != Bundle.main.bundleIdentifier {
+            appBeforeCapture = front
+        }
         // 从菜单触发时菜单还在屏幕上，延后一拍再抓，避免菜单被截进冻结帧
         DispatchQueue.main.async { [weak self] in
             self?.performCapture()
@@ -315,6 +321,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         longCapture = controller
         controller.start()
+
+        // 把焦点还给原来的应用：iCut 占着前台时，页面可能收不到滚轮，表现为“怎么滚都不动”。
+        // 实测 activate(options: []) 会返回 false，必须带 activateIgnoringOtherApps。
+        if let app = appBeforeCapture, app.bundleIdentifier != Bundle.main.bundleIdentifier {
+            app.activate(options: [.activateIgnoringOtherApps])
+        } else {
+            NSApp.deactivate()
+        }
     }
 
     // MARK: - 文字识别
