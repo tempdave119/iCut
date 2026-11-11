@@ -140,8 +140,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
-    // 截图流程在 F-04 / F-05 接入，这里先保证热键与菜单入口可达
+    // 截图流程：权限 → 逐屏抓取 → （F-05 接入覆盖层）
     @objc private func startCapture() {
-        NSLog("iCut: 收到截图触发")
+        guard ScreenCapturePermission.isGranted else {
+            handleMissingPermission()
+            return
+        }
+
+        let frames = ScreenCapture.captureAllScreens()
+        guard !frames.isEmpty else {
+            presentAlert(title: "截图失败", message: "未能抓取屏幕画面。请确认「屏幕录制」权限已勾选，并重启 iCut 后重试。")
+            return
+        }
+
+        let detail = frames
+            .map { "\(Int($0.screenFrame.width))x\(Int($0.screenFrame.height))pt@\($0.backingScaleFactor)x→\($0.image.width)x\($0.image.height)px" }
+            .joined(separator: " | ")
+        NSLog("iCut: 抓到 \(frames.count) 屏：\(detail)")
+    }
+
+    /// 首次交给系统弹窗；之后再触发就直接给出去设置的入口，避免重复弹框
+    private func handleMissingPermission() {
+        let requestedKey = "permission.screenCapture.requested"
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: requestedKey) {
+            presentPermissionAlert()
+            return
+        }
+        defaults.set(true, forKey: requestedKey)
+        _ = ScreenCapturePermission.request()
+    }
+
+    private func presentPermissionAlert() {
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "需要「屏幕录制」权限"
+            alert.informativeText = "请在系统设置 → 隐私与安全性 → 屏幕录制中勾选 iCut，然后重新启动应用。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "打开系统设置")
+            alert.addButton(withTitle: "稍后")
+            if alert.runModal() == .alertFirstButtonReturn {
+                ScreenCapturePermission.openSettings()
+            }
+        }
     }
 }
