@@ -98,6 +98,13 @@ final class SelectionOverlayView: NSView {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
+        // 工具栏与颜色面板上用箭头，避免误以为还在框选
+        if completedRect != nil {
+            addCursorRect(barFrame(), cursor: .arrow)
+            if let palette = paletteFrame() {
+                addCursorRect(palette, cursor: .arrow)
+            }
+        }
     }
 
     override func updateTrackingAreas() {
@@ -638,6 +645,8 @@ final class SelectionOverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        // 工具栏出现或位置变化后，光标区域需要重新登记
+        defer { window?.invalidateCursorRects(for: self) }
         let point = convert(event.locationInWindow, from: nil)
 
         // 手柄调整结束
