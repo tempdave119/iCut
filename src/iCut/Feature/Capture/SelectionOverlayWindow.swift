@@ -134,9 +134,9 @@ final class SelectionOverlayView: NSView {
             + Self.barGap
         let height = Self.barItemSize + Self.barPadding * 2
 
-        guard let selection = completedRect ?? (state.isUsable ? state.rect : nil),
+        guard let selection = completedRect,
               toolbarPosition == .followSelection else {
-            // 固定底部，或还没有选区时都放屏幕底部居中
+            // 固定底部，或还没松手时都放屏幕底部居中
             return CGRect(x: (bounds.width - width) / 2, y: bounds.height - height - 36, width: width, height: height)
         }
 
@@ -176,7 +176,8 @@ final class SelectionOverlayView: NSView {
     }
 
     private func barAction(at point: CGPoint) -> BarAction? {
-        guard completedRect != nil || state.isUsable else { return nil }
+        // 工具栏只在松手后出现
+        guard completedRect != nil else { return nil }
         let bar = barFrame().insetBy(dx: -6, dy: -6)
         guard bar.contains(point) else { return nil }
 
@@ -391,7 +392,7 @@ final class SelectionOverlayView: NSView {
             drawWindowHighlight(hovered)
         }
 
-        if completedRect != nil || state.isUsable {
+        if completedRect != nil {
             drawBottomBar()
             drawPalette()
         }
