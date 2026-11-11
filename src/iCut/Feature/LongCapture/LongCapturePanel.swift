@@ -1,5 +1,11 @@
 import AppKit
 
+/// 控制条上的按钮：窗口不是 key 时第一次点击也要直接生效，
+/// 否则点击只会激活面板，表现为「点完成没反应」。
+private final class FirstMouseButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// 长截图时的悬浮控制条：显示已拼接高度，提供完成 / 取消；可拖动避开采集区域。
 final class LongCapturePanel: NSPanel {
     var onFinish: (() -> Void)?
@@ -34,17 +40,29 @@ final class LongCapturePanel: NSPanel {
     /// 面板不抢浏览器焦点：用户还要继续滚动页面
     override var canBecomeKey: Bool { true }
 
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 53: // Esc
+            onCancel?()
+        case 36, 76: // Return / Enter
+            onFinish?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
     func update(status: String, hint: String) {
         statusLabel.stringValue = status
         hintLabel.stringValue = hint
     }
 
-    /// 优先放在选区下方，放不下就放到上方；左右不越界
-    func place(below selection: CGRect, in visibleFrame: CGRect) {
+    /// 优先放在选区上方：点完工具栏后鼠标就在选区下方，
+    /// 面板放上去可以避免滚动时鼠标正好落在面板上而“滚不动”。
+    func place(near selection: CGRect, in visibleFrame: CGRect) {
         let size = frame.size
-        var origin = CGPoint(x: selection.minX, y: selection.minY - size.height - 14)
-        if origin.y < visibleFrame.minY + 8 {
-            origin.y = selection.maxY + 14
+        var origin = CGPoint(x: selection.midX - size.width / 2, y: selection.maxY + 14)
+        if origin.y + size.height > visibleFrame.maxY - 8 {
+            origin.y = selection.minY - size.height - 14
         }
         origin.x = min(max(visibleFrame.minX + 8, origin.x), visibleFrame.maxX - size.width - 8)
         origin.y = min(max(visibleFrame.minY + 8, origin.y), visibleFrame.maxY - size.height - 8)
@@ -67,9 +85,9 @@ final class LongCapturePanel: NSPanel {
         hintLabel.maximumNumberOfLines = 2
         hintLabel.lineBreakMode = .byWordWrapping
 
-        let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancelTapped))
+        let cancelButton = FirstMouseButton(title: "取消", target: self, action: #selector(cancelTapped))
         cancelButton.bezelStyle = .rounded
-        let finishButton = NSButton(title: "完成", target: self, action: #selector(finishTapped))
+        let finishButton = FirstMouseButton(title: "完成", target: self, action: #selector(finishTapped))
         finishButton.bezelStyle = .rounded
 
         let buttons = NSStackView(views: [cancelButton, finishButton])

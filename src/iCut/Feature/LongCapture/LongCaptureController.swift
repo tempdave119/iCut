@@ -18,12 +18,14 @@ final class LongCaptureController {
     private var timer: Timer?
     private var isTicking = false
     private var didLogFirstFrame = false
+    /// 采集期间禁止 App Nap，否则窗口不活跃时定时器会被节流，看起来“怎么滚都不动”
+    private var activity: NSObjectProtocol?
     private(set) var isActive = false
 
     init(
         frame: DisplayFrame,
         rectInScreen: CGRect,
-        interval: TimeInterval = 0.2,
+        interval: TimeInterval = 0.15,
         maxHeight: Int = 20000,
         onFinish: @escaping (Output?) -> Void
     ) {
@@ -43,7 +45,7 @@ final class LongCaptureController {
         panel.onCancel = { [weak self] in self?.finish(commit: false) }
         self.panel = panel
         panel.orderFront(nil)
-        panel.place(below: appKitRect, in: frame.screenFrame)
+        panel.place(near: appKitRect, in: frame.screenFrame)
         panel.update(
             status: "已拼接 0 px",
             hint: "把鼠标移到要截的页面上，向下滚动，高度会自动增长"
@@ -53,6 +55,7 @@ final class LongCaptureController {
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated], reason: "长截图采集中")
         tick()
     }
 
@@ -127,6 +130,10 @@ final class LongCaptureController {
         isActive = false
         timer?.invalidate()
         timer = nil
+        if let activity {
+            ProcessInfo.processInfo.endActivity(activity)
+            self.activity = nil
+        }
         if let panel {
             panel.orderOut(nil)
             panel.close()

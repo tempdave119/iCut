@@ -292,9 +292,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             let copied = ClipboardService.copy(image: output.image, scale: output.scale)
-            AutoSaver.saveIfEnabled(image: output.image, scale: output.scale)
+            let savedURL = AutoSaver.saveIfEnabled(image: output.image, scale: output.scale)
             NSLog(
                 "iCut: 长截图 \(output.image.width)x\(output.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"
+            )
+
+            // 长图没有预览窗口，用一次性提示明确告诉用户图在哪
+            let size = "\(output.image.width)×\(output.image.height)"
+            let message: String
+            if !copied {
+                message = "长图已生成 \(size)，但复制到剪贴板失败"
+            } else if savedURL != nil {
+                message = "长图已复制并保存 \(size)"
+            } else {
+                message = "长图已复制 \(size) · ⌘V 粘贴"
+            }
+            LongCaptureToast.show(
+                message,
+                near: Self.appKitRect(for: selection),
+                in: selection.frame.screenFrame
             )
         }
         longCapture = controller
@@ -329,6 +345,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.show(text: text, message: message)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// 选区转为 AppKit 全局坐标，给悬浮提示定位
+    private static func appKitRect(for selection: SelectionOverlayController.CaptureSelection) -> CGRect {
+        let screen = selection.frame.screenFrame
+        return CGRect(
+            x: screen.minX + selection.rectInScreen.minX,
+            y: screen.maxY - selection.rectInScreen.minY - selection.rectInScreen.height,
+            width: selection.rectInScreen.width,
+            height: selection.rectInScreen.height
+        )
     }
 
     /// 选区是屏内左上原点坐标，贴图窗口需要左下原点的全局坐标
