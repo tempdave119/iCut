@@ -7,10 +7,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeyCenter = HotKeyCenter()
     private var shortcutWindow: ShortcutRecorderWindow?
     private var activeConfig = HotKeyStore.load()
+    private let selectionController = SelectionOverlayController()
+    /// 每次启动最多向系统发起一次授权请求，避免反复触发系统弹框
+    private var permissionRequestedThisLaunch = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
         registerActiveHotKey()
+        NSLog("iCut: 屏幕录制权限 = \(ScreenCapturePermission.isGranted)")
     }
 
     private func setUpStatusItem() {
@@ -140,12 +144,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
-    // 截图流程：权限 → 逐屏抓取 → （F-05 接入覆盖层）
+    // 截图流程：幂等检查 → 权限 → 抓屏 → 覆盖层框选
     @objc private func startCapture() {
+        guard !selectionController.isActive else {
+            NSLog("iCut: 已有截图会话进行中，忽略本次触发")
+            return
+        }
         guard ScreenCapturePermission.isGranted else {
             handleMissingPermission()
             return
         }
+        // 从菜单触发时菜单还在屏幕上，延后一拍再抓，避免菜单被截进冻结帧
+        DispatchQueue.main.async { [weak self] in
+            self?.performCapture()
+        }
+    }
+
+    private func performCapture() {
+        guard !selectionController.isActive else { return }
 
         let frames = ScreenCapture.captureAllScreens()
         guard !frames.isEmpty else {
@@ -153,22 +169,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let detail = frames
-            .map { "\(Int($0.screenFrame.width))x\(Int($0.screenFrame.height))pt@\($0.backingScaleFactor)x→\($0.image.width)x\($0.image.height)px" }
-            .joined(separator: " | ")
-        NSLog("iCut: 抓到 \(frames.count) 屏：\(detail)")
+        selectionController.begin(frames: frames) { selection in
+            guard let selection else {
+                NSLog("iCut: 截图已取消")
+                return
+            }
+            NSLog(
+                "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px"
+            )
+        }
     }
 
-    /// 首次交给系统弹窗；之后再触发就直接给出去设置的入口，避免重复弹框
+    /// 首次触发只让系统登记（用户看到系统框），再次触发才弹自有引导，避免两个窗口叠在一起
     private func handleMissingPermission() {
-        let requestedKey = "permission.screenCapture.requested"
-        let defaults = UserDefaults.standard
-        if defaults.bool(forKey: requestedKey) {
-            presentPermissionAlert()
+        NSLog("iCut: 触发时权限检查未通过")
+        if !permissionRequestedThisLaunch {
+            permissionRequestedThisLaunch = true
+            _ = ScreenCapturePermission.request()
             return
         }
-        defaults.set(true, forKey: requestedKey)
-        _ = ScreenCapturePermission.request()
+        presentPermissionAlert()
     }
 
     private func presentPermissionAlert() {
@@ -176,7 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "需要「屏幕录制」权限"
-            alert.informativeText = "请在系统设置 → 隐私与安全性 → 屏幕录制中勾选 iCut，然后重新启动应用。"
+            alert.informativeText = "请到「系统设置 → 隐私与安全性 → 屏幕录制」：\n1. 若 iCut 已在列表中，先取消勾选\n2. 再重新勾选\n3. 退出并重新打开 iCut\n\n开发版每次重新构建后签名会变化，系统会当成新应用，需要重新授权。"
             alert.alertStyle = .warning
             alert.addButton(withTitle: "打开系统设置")
             alert.addButton(withTitle: "稍后")

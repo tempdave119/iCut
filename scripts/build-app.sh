@@ -54,8 +54,13 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 cp "$ROOT_DIR/resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 
-echo "==> ad-hoc 签名"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR"
+echo "==> 签名"
+# 有本地开发证书就用它：ad-hoc 每次重建都会改变 cdhash，屏幕录制授权会反复失效
+SIGN_IDENTITY="iCut Dev Signer"
+if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+  SIGN_IDENTITY="-"
+fi
+codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP_DIR"
 codesign --verify --verbose=1 "$APP_DIR"
 
 echo "==> 完成：$APP_DIR"
