@@ -38,7 +38,7 @@ v0.1 已实现：
 
 ### 安装（下载安装包）
 
-发布包由 GitHub Actions 构建并挂在 Releases 页面，文件名形如 `iCut-v0.1.0.zip`。解压后把 `iCut.app` 拖进 `/Applications`。
+最新版本 [v0.1.0](https://github.com/tempdave119/iCut/releases/tag/v0.1.0)，附件 `iCut-v0.1.0.zip`。解压后把 `iCut.app` 拖进 `/Applications`。
 
 安装包为 ad-hoc 签名、未经 Apple 公证，首次打开会被 Gatekeeper 拦截：在 Finder 里右键 `iCut.app` 选「打开」，或执行：
 
