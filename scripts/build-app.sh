@@ -53,6 +53,9 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 cp "$ROOT_DIR/resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+if [[ -f "$ROOT_DIR/resources/$APP_NAME.icns" ]]; then
+  cp "$ROOT_DIR/resources/$APP_NAME.icns" "$APP_DIR/Contents/Resources/$APP_NAME.icns"
+fi
 
 echo "==> 签名"
 # 有本地开发证书就用它：ad-hoc 每次重建都会改变 cdhash，屏幕录制授权会反复失效

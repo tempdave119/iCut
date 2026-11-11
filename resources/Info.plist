@@ -8,6 +8,8 @@
 	<string>iCut</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.kevin.icut</string>
+	<key>CFBundleIconFile</key>
+	<string>iCut</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
