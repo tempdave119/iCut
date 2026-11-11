@@ -51,6 +51,7 @@ final class SelectionOverlayView: NSView {
     // MARK: - 状态
 
     private let frameImage: DisplayFrame
+    private let toolbarPosition = ToolbarSettings.load()
     private var state = SelectionState()
     /// 松开鼠标后保留的选区，供确认与调整
     private var completedRect: CGRect?
@@ -135,7 +136,9 @@ final class SelectionOverlayView: NSView {
             + Self.barGap * 2
         let height = Self.barItemSize + Self.barPadding * 2
 
-        guard let selection = completedRect ?? (state.isUsable ? state.rect : nil) else {
+        guard let selection = completedRect ?? (state.isUsable ? state.rect : nil),
+              toolbarPosition == .followSelection else {
+            // 固定底部，或还没有选区时都放屏幕底部居中
             return CGRect(x: (bounds.width - width) / 2, y: bounds.height - height - 36, width: width, height: height)
         }
 

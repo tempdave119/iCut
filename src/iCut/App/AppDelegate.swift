@@ -1,9 +1,10 @@
 import AppKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var captureMenuItem: NSMenuItem?
     private var shortcutMenuItem: NSMenuItem?
+    private var toolbarPositionItems: [ToolbarPosition: NSMenuItem] = [:]
     private let hotKeyCenter = HotKeyCenter()
     private var shortcutWindow: ShortcutRecorderWindow?
     private var activeConfig = HotKeyStore.load()
@@ -48,6 +49,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let showItem = NSMenuItem(title: "显示全部贴图", action: #selector(showAllPins), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
+
+        menu.addItem(.separator())
+        let positionItem = NSMenuItem(title: "工具栏位置", action: nil, keyEquivalent: "")
+        let positionMenu = NSMenu()
+        for position in ToolbarPosition.allCases {
+            let item = NSMenuItem(title: position.displayName, action: #selector(selectToolbarPosition(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = position.rawValue
+            positionMenu.addItem(item)
+            toolbarPositionItems[position] = item
+        }
+        positionItem.submenu = positionMenu
+        menu.addItem(positionItem)
+        menu.delegate = self
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出 iCut", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -165,6 +180,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showAllPins() {
         pinController.showAll()
+    }
+
+    @objc private func selectToolbarPosition(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let position = ToolbarPosition(rawValue: raw) else { return }
+        ToolbarSettings.save(position)
+        NSLog("iCut: 工具栏位置 = \(position.displayName)")
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let current = ToolbarSettings.load()
+        for (position, item) in toolbarPositionItems {
+            item.state = (position == current) ? .on : .off
+        }
     }
 
     // 截图流程：幂等检查 → 权限 → 抓屏 → 覆盖层框选
