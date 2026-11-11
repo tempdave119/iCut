@@ -134,6 +134,63 @@ func runStickyHeaderStitchingTests() {
     )
 }
 
+/// 页面右侧有滚动条时：thumb 位置每帧不同，不能影响重叠识别。
+func runScrollbarStitchingTests() {
+    let barWidth = 15
+    let width = 220
+    let bodyWidth = width - barWidth
+
+    guard let body1 = makeRowsImage(from: 0, count: 100, width: bodyWidth),
+          let body2 = makeRowsImage(from: 60, count: 100, width: bodyWidth),
+          let frame1 = makeFrameWithScrollbar(body: body1, barWidth: barWidth, thumbRows: 60..<90, width: width),
+          let frame2 = makeFrameWithScrollbar(body: body2, barWidth: barWidth, thumbRows: 0..<20, width: width) else {
+        expect(false, "构造滚动条测试图失败")
+        return
+    }
+
+    expectEqual(
+        RollingStitcher.findOverlap(
+            existing: RollingStitcher.rowHashes(of: frame1),
+            incoming: RollingStitcher.rowHashes(of: frame2),
+            minOverlap: 40
+        ),
+        RollingStitcher.Overlap(skipRows: 0, overlapRows: 40),
+        "右侧滚动条位置变化不应影响重叠识别"
+    )
+}
+
+/// 把正文和右侧滚动条拼成一张帧图；thumbRows 用顶行坐标
+private func makeFrameWithScrollbar(body: CGImage, barWidth: Int, thumbRows: Range<Int>, width: Int) -> CGImage? {
+    let height = body.height
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        return nil
+    }
+
+    context.draw(body, in: CGRect(x: 0, y: 0, width: CGFloat(body.width), height: CGFloat(height)))
+
+    let barX = CGFloat(width - barWidth)
+    context.setFillColor(CGColor(red: 0.92, green: 0.92, blue: 0.92, alpha: 1))
+    context.fill(CGRect(x: barX, y: 0, width: CGFloat(barWidth), height: CGFloat(height)))
+    context.setFillColor(CGColor(red: 0.45, green: 0.45, blue: 0.45, alpha: 1))
+    context.fill(
+        CGRect(
+            x: barX,
+            y: CGFloat(height - thumbRows.upperBound),
+            width: CGFloat(barWidth),
+            height: CGFloat(thumbRows.count)
+        )
+    )
+    return context.makeImage()
+}
+
 /// 把头部和正文上下拼成一张帧图（头部在顶部）
 private func makeFrame(header: CGImage?, body: CGImage) -> CGImage? {
     let width = body.width

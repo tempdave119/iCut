@@ -39,6 +39,7 @@ runSettingsMigrationTests()
 runRollingStitcherTests()
 runStitchAccumulatorTests()
 runStickyHeaderStitchingTests()
+runScrollbarStitchingTests()
 
 print("")
 if failures == 0 {

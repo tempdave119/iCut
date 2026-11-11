@@ -16,7 +16,10 @@ enum RollingStitcher {
 
     /// 每行采样的列数：宽度很大时降采样，把单帧哈希控制在毫秒级
     private static let samplesPerRow = 96
-    /// 允许的行差异比例（光标闪烁、抗锯齿会让个别行不同）
+    /// 左右各留多少像素不参与哈希：页面右侧滚动条的 thumb 不随内容移动，
+    /// 一旦被采到会让整行指纹都变，导致永远匹配不上
+    private static let horizontalInset = 16
+    /// 至少留多少行差异才容忍（光标闪烁、抗锯齿会让个别行不同）
     private static let mismatchRatio = 0.01
 
     /// 逐行指纹（图像顶行在前）；读取失败返回空数组。
@@ -24,13 +27,18 @@ enum RollingStitcher {
         guard let buffer = normalizedBuffer(of: image) else { return [] }
         var hashes: [UInt64] = []
         hashes.reserveCapacity(buffer.height)
-        let stride = max(1, buffer.width / samplesPerRow)
+
+        // 只采中间区域：避开左右边缘的滚动条与窗口圆角
+        let inset = min(max(horizontalInset, buffer.width / 20), buffer.width / 4)
+        let startX = inset
+        let endX = max(startX + 1, buffer.width - inset)
+        let stride = max(1, (endX - startX) / samplesPerRow)
 
         for row in 0..<buffer.height {
             var hash: UInt64 = 0xcbf29ce484222325
             let rowStart = row * buffer.bytesPerRow
-            var x = 0
-            while x < buffer.width {
+            var x = startX
+            while x < endX {
                 let offset = rowStart + x * 4
                 for channel in 0..<4 {
                     hash ^= UInt64(buffer.data[offset + channel])
@@ -90,7 +98,7 @@ enum RollingStitcher {
         guard let anchor = existing.last else { return nil }
         let maxOverlap = min(existing.count, incoming.count - skip)
         guard maxOverlap >= minOverlap else { return nil }
-        let tolerance = tolerant ? max(2, maxOverlap / 100) : 0
+        let tolerance = tolerant ? max(2, Int(Double(maxOverlap) * mismatchRatio)) : 0
 
         for overlap in stride(from: maxOverlap, through: minOverlap, by: -1) {
             let anchorIndex = skip + overlap - 1

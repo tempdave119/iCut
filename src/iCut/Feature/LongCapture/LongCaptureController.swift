@@ -117,6 +117,9 @@ final class LongCaptureController {
                 status: "已拼接 \(accumulator.height) px · \(reason)",
                 hint: Self.hint(for: reason)
             )
+            if reason == "未找到重叠区域" {
+                dumpDebugFrame(image)
+            }
         }
 
         // 每秒记一次状态，便于事后判断到底是“页面没滚”还是“匹配不上”
@@ -126,6 +129,22 @@ final class LongCaptureController {
             lastReason = "等待中"
         }
     }
+
+    /// 调试开关（默认关）：`defaults write com.icut.app debug.longCaptureDump -bool YES` 后，
+    /// 匹配失败的帧会存到 ~/Library/Caches/longshot-debug/，方便排查真实页面为什么对不上。
+    private var debugDumpCount = 0
+    private func dumpDebugFrame(_ image: CGImage) {
+        guard UserDefaults.standard.bool(forKey: "debug.longCaptureDump"), debugDumpCount < 20 else { return }
+        debugDumpCount += 1
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("longshot-debug", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard let data = ImageSaver.pngData(from: image, scale: 1) else { return }
+        let name = "frame-\(debugDumpCount)-\(Int(Date().timeIntervalSince1970)).png"
+        try? data.write(to: directory.appendingPathComponent(name))
+    }
+
+    // MARK: - 状态文案
 
     private static func hint(for reason: String) -> String {
         switch reason {
