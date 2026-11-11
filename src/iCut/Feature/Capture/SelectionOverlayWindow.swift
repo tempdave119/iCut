@@ -44,6 +44,9 @@ final class SelectionOverlayView: NSView {
     private var redoStack: [Annotation] = []
     private var draft: Annotation?
     private var nextNumber = 1
+    private var currentColor: AnnotationColor = .red
+    private var textInput: AnnotationTextField?
+    private var textAnchor: CGPoint?
 
     var onConfirm: ((CGRect, [Annotation]) -> Void)?
     var onSave: ((CGRect, [Annotation]) -> Void)?
@@ -106,7 +109,8 @@ final class SelectionOverlayView: NSView {
             drawAnnotations(clippedTo: selection)
             drawSelectionBorder(selection)
             drawSizeLabel(for: selection)
-            drawToolHint(for: selection)
+            drawToolBar(for: selection)
+            drawColorRow(for: selection)
         } else if let hovered = hoveredWindowRect {
             drawWindowHighlight(hovered)
         }
@@ -137,27 +141,95 @@ final class SelectionOverlayView: NSView {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    private func drawToolHint(for selection: CGRect) {
-        let hint: String
-        if let activeTool {
-            hint = "\(activeTool.displayName)（\(activeTool.shortcut)）：拖拽绘制 · ⌘Z 撤销 · Esc 退出工具"
-        } else {
-            hint = "R 矩形 O 椭圆 A 箭头 L 直线 P 画笔 T 文字 M 马赛克 N 序号 · ⌘S 保存"
+    private static let toolButtonSize = CGSize(width: 48, height: 26)
+    private static let toolButtonSpacing: CGFloat = 5
+
+    /// 工具条整体区域（含按钮间隙），用于吞掉误点，避免重置选区
+    private func toolBarContainerRect(for selection: CGRect) -> CGRect {
+        let count = Annotation.Kind.allCases.count
+        guard count > 0 else { return .zero }
+        return toolButtonRect(at: 0, for: selection).union(toolButtonRect(at: count - 1, for: selection))
+    }
+
+    /// 工具条按钮的矩形（视图坐标）
+    private func toolButtonRect(at index: Int, for selection: CGRect) -> CGRect {
+        let count = CGFloat(Annotation.Kind.allCases.count)
+        let totalWidth = count * Self.toolButtonSize.width + (count - 1) * Self.toolButtonSpacing
+
+        var originX = selection.minX
+        if originX + totalWidth > bounds.width {
+            originX = max(0, bounds.width - totalWidth)
         }
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: NSColor.white
-        ]
-        let size = hint.size(withAttributes: attributes)
-        let labelRect = CGRect(
-            x: selection.minX,
-            y: max(0, selection.minY - size.height - 10),
-            width: size.width + 12,
-            height: size.height + 6
+        // 选上方放不下就放到选区内顶部
+        var originY = selection.minY - Self.toolButtonSize.height - 8
+        if originY < 0 {
+            originY = selection.minY + 8
+        }
+
+        return CGRect(
+            x: originX + CGFloat(index) * (Self.toolButtonSize.width + Self.toolButtonSpacing),
+            y: originY,
+            width: Self.toolButtonSize.width,
+            height: Self.toolButtonSize.height
         )
-        NSColor.black.withAlphaComponent(0.6).setFill()
-        NSBezierPath(roundedRect: labelRect, xRadius: 4, yRadius: 4).fill()
-        hint.draw(at: CGPoint(x: labelRect.minX + 6, y: labelRect.minY + 3), withAttributes: attributes)
+    }
+
+    private func drawToolBar(for selection: CGRect) {
+        for (index, kind) in Annotation.Kind.allCases.enumerated() {
+            let rect = toolButtonRect(at: index, for: selection)
+            let isActive = activeTool == kind
+
+            if isActive {
+                NSColor.systemRed.withAlphaComponent(0.95).setFill()
+            } else {
+                NSColor.black.withAlphaComponent(0.65).setFill()
+            }
+            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+
+            let title = "\(kind.displayName) \(kind.shortcut)"
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: isActive ? .bold : .regular),
+                .foregroundColor: NSColor.white
+            ]
+            let size = title.size(withAttributes: attributes)
+            title.draw(
+                at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
+                withAttributes: attributes
+            )
+        }
+    }
+
+    private static let colorDotSize: CGFloat = 20
+    private static let colorDotSpacing: CGFloat = 8
+
+    private func colorDotRect(at index: Int, for selection: CGRect) -> CGRect {
+        let container = toolBarContainerRect(for: selection)
+        return CGRect(
+            x: container.minX + CGFloat(index) * (Self.colorDotSize + Self.colorDotSpacing),
+            y: container.maxY + 6,
+            width: Self.colorDotSize,
+            height: Self.colorDotSize
+        )
+    }
+
+    private func colorRowRect(for selection: CGRect) -> CGRect {
+        let count = AnnotationColor.allCases.count
+        guard count > 0 else { return .zero }
+        return colorDotRect(at: 0, for: selection).union(colorDotRect(at: count - 1, for: selection))
+    }
+
+    private func drawColorRow(for selection: CGRect) {
+        for (index, color) in AnnotationColor.allCases.enumerated() {
+            let rect = colorDotRect(at: index, for: selection)
+            color.nsColor.setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            if currentColor == color {
+                NSColor.white.setStroke()
+                let ring = NSBezierPath(ovalIn: rect.insetBy(dx: -2.5, dy: -2.5))
+                ring.lineWidth = 2
+                ring.stroke()
+            }
+        }
     }
 
     private func drawWindowHighlight(_ rect: CGRect) {
@@ -234,20 +306,48 @@ final class SelectionOverlayView: NSView {
         window?.makeKey()
         let point = convert(event.locationInWindow, from: nil)
 
+        // 工具条区域（含间隙）优先于选区交互，避免误点重置选区
+        if let selection = currentSelection {
+            let container = toolBarContainerRect(for: selection).insetBy(dx: -10, dy: -10)
+            if container.contains(point) {
+                for (index, kind) in Annotation.Kind.allCases.enumerated() {
+                    if toolButtonRect(at: index, for: selection).contains(point) {
+                        toggleTool(kind)
+                        return
+                    }
+                }
+                // 点在按钮间隙：吞掉事件，不动选区
+                return
+            }
+
+            let colorContainer = colorRowRect(for: selection).insetBy(dx: -8, dy: -8)
+            if colorContainer.contains(point) {
+                for (index, color) in AnnotationColor.allCases.enumerated() {
+                    if colorDotRect(at: index, for: selection).contains(point) {
+                        currentColor = color
+                        needsDisplay = true
+                        return
+                    }
+                }
+                return
+            }
+        }
+
         // 标注优先：有工具且在选区内
         if let tool = activeTool, let selection = currentSelection, selection.contains(point) {
             if tool == .text {
-                promptText(at: point)
+                beginTextInput(at: point)
                 return
             }
             if tool == .number {
-                annotations.append(Annotation(kind: .number, points: [point], number: nextNumber))
+                annotations.append(Annotation(kind: .number, points: [point], number: nextNumber, color: currentColor))
                 nextNumber += 1
                 redoStack.removeAll()
+                NSLog("iCut: 添加序号标注")
                 needsDisplay = true
                 return
             }
-            draft = Annotation(kind: tool, points: [point, point])
+            draft = Annotation(kind: tool, points: [point, point], color: currentColor)
             needsDisplay = true
             return
         }
@@ -276,7 +376,10 @@ final class SelectionOverlayView: NSView {
             if currentDraft.kind == .freehand {
                 currentDraft.points.append(point)
             } else {
-                currentDraft.points = [currentDraft.points[0], point]
+                let end = event.modifierFlags.contains(.shift)
+                    ? constrainedPoint(from: currentDraft.points[0], to: point, kind: currentDraft.kind)
+                    : point
+                currentDraft.points = [currentDraft.points[0], end]
             }
             draft = currentDraft
             needsDisplay = true
@@ -298,6 +401,12 @@ final class SelectionOverlayView: NSView {
         if let currentDraft = draft {
             commitDraft(currentDraft)
             draft = nil
+            needsDisplay = true
+            return
+        }
+
+        // 只有真正处于拖拽状态才处理选区；否则（工具条点击、文字输入等）不动已有选区
+        guard state.isDragging else {
             needsDisplay = true
             return
         }
@@ -324,7 +433,30 @@ final class SelectionOverlayView: NSView {
             redoStack.removeAll()
             nextNumber = 1
         }
+        // 清掉拖拽状态，避免后续 mouseUp 把旧选区当成新框选
+        state.reset()
         needsDisplay = true
+    }
+
+    /// Shift 约束：矩形/椭圆/马赛克出正方与正圆，直线/箭头吸附 45°
+    private func constrainedPoint(from start: CGPoint, to end: CGPoint, kind: Annotation.Kind) -> CGPoint {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        switch kind {
+        case .rectangle, .ellipse, .mosaic:
+            let side = max(abs(dx), abs(dy))
+            return CGPoint(
+                x: start.x + (dx < 0 ? -side : side),
+                y: start.y + (dy < 0 ? -side : side)
+            )
+        case .line, .arrow:
+            let length = hypot(dx, dy)
+            let step = CGFloat.pi / 4
+            let angle = (atan2(dy, dx) / step).rounded() * step
+            return CGPoint(x: start.x + cos(angle) * length, y: start.y + sin(angle) * length)
+        default:
+            return end
+        }
     }
 
     private func commitDraft(_ annotation: Annotation) {
@@ -336,6 +468,7 @@ final class SelectionOverlayView: NSView {
         }
         annotations.append(annotation)
         redoStack.removeAll()
+        NSLog("iCut: 添加\(annotation.kind.displayName)标注，共 \(annotations.count) 条")
     }
 
     /// 当前可确认的选区（拖拽中或已松手）
@@ -406,6 +539,7 @@ final class SelectionOverlayView: NSView {
 
     private func toggleTool(_ tool: Annotation.Kind) {
         activeTool = (activeTool == tool) ? nil : tool
+        NSLog("iCut: 标注工具 = \(activeTool?.displayName ?? "无")")
         needsDisplay = true
     }
 
@@ -427,25 +561,57 @@ final class SelectionOverlayView: NSView {
         needsDisplay = true
     }
 
-    private func promptText(at point: CGPoint) {
-        let alert = NSAlert()
-        alert.messageText = "输入文字"
-        alert.informativeText = "文字将标注在点击位置"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 22))
-        alert.accessoryView = field
-        alert.addButton(withTitle: "确定")
-        alert.addButton(withTitle: "取消")
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                annotations.append(Annotation(kind: .text, points: [point], text: text))
-                redoStack.removeAll()
-                needsDisplay = true
-            }
-        }
-        // 模态框关闭后把键盘焦点还给覆盖层
+    private func beginTextInput(at point: CGPoint) {
+        commitTextInput()
+
+        // 内联输入框：NSAlert 会被 screenSaver 层的覆盖层盖住，不能用模态弹窗
+        let width: CGFloat = 220
+        let height: CGFloat = 26
+        let originX = min(point.x, max(0, bounds.width - width - 8))
+        let originY = min(max(0, point.y - height / 2), max(0, bounds.height - height - 8))
+
+        let field = AnnotationTextField(frame: CGRect(x: originX, y: originY, width: width, height: height))
+        field.font = NSFont.systemFont(ofSize: AnnotationPainter.baseFontSize, weight: .semibold)
+        field.textColor = currentColor.nsColor
+        field.backgroundColor = NSColor.black.withAlphaComponent(0.55)
+        field.drawsBackground = true
+        field.isBordered = false
+        field.isBezeled = false
+        field.focusRingType = .none
+        field.placeholderString = "输入文字后回车确认，Esc 取消"
+        field.target = self
+        field.action = #selector(commitTextInput)
+        field.onCancel = { [weak self] in self?.cancelTextInput() }
+        addSubview(field)
+        window?.makeFirstResponder(field)
+        textInput = field
+        textAnchor = point
+    }
+
+    @objc private func commitTextInput() {
+        guard let field = textInput, let anchor = textAnchor else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        field.removeFromSuperview()
+        textInput = nil
+        textAnchor = nil
         window?.makeKey()
+
+        guard !text.isEmpty else {
+            needsDisplay = true
+            return
+        }
+        annotations.append(Annotation(kind: .text, points: [anchor], text: text, color: currentColor))
+        redoStack.removeAll()
+        NSLog("iCut: 添加文字标注")
+        needsDisplay = true
+    }
+
+    private func cancelTextInput() {
+        textInput?.removeFromSuperview()
+        textInput = nil
+        textAnchor = nil
+        window?.makeKey()
+        needsDisplay = true
     }
 
     private var confirmedSelection: CGRect? {
@@ -453,5 +619,14 @@ final class SelectionOverlayView: NSView {
             return rect
         }
         return completedRect
+    }
+}
+
+/// 内联文字输入框：Esc 走 cancelOperation，回车走 target/action
+final class AnnotationTextField: NSTextField {
+    var onCancel: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        onCancel?()
     }
 }

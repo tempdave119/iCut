@@ -5,7 +5,6 @@ import AppKit
 enum AnnotationPainter {
     static let baseLineWidth: CGFloat = 3
     static let baseFontSize: CGFloat = 16
-    private static var accent: NSColor { .systemRed }
 
     /// - Parameters:
     ///   - offset: 坐标平移（导出时传选区原点）
@@ -23,6 +22,7 @@ enum AnnotationPainter {
             CGPoint(x: ($0.x - offset.x) * scale, y: ($0.y - offset.y) * scale)
         }
         let lineWidth = baseLineWidth * scale
+        let accent = annotation.color.nsColor
 
         switch annotation.kind {
         case .rectangle:
@@ -51,7 +51,7 @@ enum AnnotationPainter {
 
         case .arrow:
             guard points.count >= 2 else { return }
-            drawArrow(from: points[0], to: points[1], lineWidth: lineWidth)
+            drawArrow(from: points[0], to: points[1], lineWidth: lineWidth, color: accent)
 
         case .freehand:
             guard points.count >= 2 else { return }
@@ -71,7 +71,7 @@ enum AnnotationPainter {
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: baseFontSize * scale, weight: .semibold),
                 .foregroundColor: accent,
-                .strokeColor: NSColor.white,
+                .strokeColor: contrastColor(against: accent),
                 .strokeWidth: -3.0
             ]
             text.draw(at: origin, withAttributes: attributes)
@@ -88,11 +88,18 @@ enum AnnotationPainter {
 
         case .number:
             guard let point = points.first, let number = annotation.number else { return }
-            drawNumber(number, at: point, scale: scale)
+            drawNumber(number, at: point, scale: scale, color: accent)
         }
     }
 
     // MARK: - 细节绘制
+
+    /// 文字描边用对比色，避免深色字配深色背景糊成一片
+    private static func contrastColor(against color: NSColor) -> NSColor {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return .white }
+        let luminance = 0.299 * rgb.redComponent + 0.587 * rgb.greenComponent + 0.114 * rgb.blueComponent
+        return luminance > 0.6 ? .black : .white
+    }
 
     private static func normalized(_ a: CGPoint, _ b: CGPoint) -> CGRect {
         CGRect(
@@ -103,13 +110,13 @@ enum AnnotationPainter {
         )
     }
 
-    private static func drawArrow(from start: CGPoint, to end: CGPoint, lineWidth: CGFloat) {
+    private static func drawArrow(from start: CGPoint, to end: CGPoint, lineWidth: CGFloat, color: NSColor) {
         let path = NSBezierPath()
         path.move(to: start)
         path.line(to: end)
         path.lineWidth = lineWidth
         path.lineCapStyle = .round
-        accent.setStroke()
+        color.setStroke()
         path.stroke()
 
         let angle = atan2(end.y - start.y, end.x - start.x)
@@ -128,11 +135,11 @@ enum AnnotationPainter {
         head.line(to: left)
         head.line(to: right)
         head.close()
-        accent.setFill()
+        color.setFill()
         head.fill()
     }
 
-    private static func drawNumber(_ number: Int, at point: CGPoint, scale: CGFloat) {
+    private static func drawNumber(_ number: Int, at point: CGPoint, scale: CGFloat, color: NSColor) {
         let radius: CGFloat = 11 * scale
         let circle = CGRect(
             x: point.x - radius,
@@ -140,13 +147,13 @@ enum AnnotationPainter {
             width: radius * 2,
             height: radius * 2
         )
-        accent.setFill()
+        color.setFill()
         NSBezierPath(ovalIn: circle).fill()
 
         let text = "\(number)"
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 13 * scale, weight: .bold),
-            .foregroundColor: NSColor.white
+            .foregroundColor: contrastColor(against: color)
         ]
         let size = text.size(withAttributes: attributes)
         text.draw(

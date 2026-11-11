@@ -1,4 +1,25 @@
-import CoreGraphics
+import AppKit
+
+/// 标注可选颜色；用枚举而不是直接存 NSColor，便于在工具条上做固定调色板。
+enum AnnotationColor: CaseIterable {
+    case red
+    case yellow
+    case green
+    case blue
+    case white
+    case black
+
+    var nsColor: NSColor {
+        switch self {
+        case .red: return .systemRed
+        case .yellow: return .systemYellow
+        case .green: return .systemGreen
+        case .blue: return .systemBlue
+        case .white: return .white
+        case .black: return .black
+        }
+    }
+}
 
 /// 一条标注。坐标统一用屏内视图坐标（原点左上）。
 struct Annotation {
@@ -37,6 +58,14 @@ struct Annotation {
             case .number: return "N"
             }
         }
+
+        /// 支持按住 Shift 约束比例的工具
+        var supportsShiftConstraint: Bool {
+            switch self {
+            case .rectangle, .ellipse, .line, .arrow, .mosaic: return true
+            case .freehand, .text, .number: return false
+            }
+        }
     }
 
     let kind: Kind
@@ -44,6 +73,7 @@ struct Annotation {
     var points: [CGPoint]
     var text: String?
     var number: Int?
+    var color: AnnotationColor = .red
 
     /// 标注覆盖的矩形，用于绘制裁剪与预览
     var boundingRect: CGRect {
