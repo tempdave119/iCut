@@ -91,24 +91,16 @@ final class PinContentView: NSView {
         let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 3
         guard delta != 0 else { return }
 
-        let factor = 1 + delta * 0.01
-        let point = NSEvent.mouseLocation
-        var frame = window.frame
-
+        let frame = window.frame
         let maxSide = max(window.screen?.visibleFrame.width ?? frame.width, frame.width) * 2
-        let newWidth = max(Self.minimumSide, min(frame.width * factor, maxSide))
-        let newHeight = newWidth * frame.height / frame.width
-        guard newWidth.isFinite, newHeight.isFinite, newWidth > 0, newHeight > 0 else { return }
-
-        // 保持光标下的图像点不动，缩放才不会“跑掉”
-        let u = frame.width > 0 ? (point.x - frame.minX) / frame.width : 0.5
-        let v = frame.height > 0 ? (point.y - frame.minY) / frame.height : 0.5
-        frame.origin = CGPoint(
-            x: point.x - u * newWidth,
-            y: point.y - v * newHeight
+        let newFrame = ScreenGeometry.zoomedFrame(
+            current: frame,
+            cursor: NSEvent.mouseLocation,
+            factor: 1 + delta * 0.01,
+            minSide: Self.minimumSide,
+            maxSide: maxSide
         )
-        frame.size = CGSize(width: newWidth, height: newHeight)
-        window.setFrame(frame, display: true)
+        window.setFrame(newFrame, display: true)
     }
 
     // MARK: - 键盘与菜单

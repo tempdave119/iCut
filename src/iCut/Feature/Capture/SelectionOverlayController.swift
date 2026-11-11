@@ -67,14 +67,8 @@ final class SelectionOverlayController {
             return
         }
 
-        // 视图坐标与 CGImage 像素坐标同为左上原点，直接乘 scale；取整避免边缘半像素
-        let scale = frame.backingScaleFactor
-        let pixelRect = CGRect(
-            x: rect.minX * scale,
-            y: rect.minY * scale,
-            width: rect.width * scale,
-            height: rect.height * scale
-        ).integral
+        // 视图坐标与 CGImage 像素坐标同为左上原点，换算与取整统一交给 ScreenGeometry
+        let pixelRect = ScreenGeometry.pixelRect(fromPoint: rect, scale: frame.backingScaleFactor)
         guard let cropped = frame.image.cropping(to: pixelRect) else {
             NSLog("iCut: 裁切选区失败 rect=\(pixelRect)")
             completion?(nil)

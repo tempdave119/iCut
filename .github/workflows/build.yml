@@ -26,6 +26,11 @@ jobs:
           swift --version
           xcodebuild -version | head -1
 
+      - name: 单元测试
+        run: |
+          chmod +x scripts/run-tests.sh
+          ./scripts/run-tests.sh
+
       - name: 构建 universal .app
         run: |
           chmod +x scripts/build-app.sh

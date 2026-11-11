@@ -39,12 +39,7 @@ enum ScreenCapture {
         var frames: [DisplayFrame] = []
         for screen in screens {
             // 抓屏 API 只认 Quartz 全局坐标（原点在主屏左上），需从 AppKit 坐标翻转 y
-            let quartzRect = CGRect(
-                x: screen.frame.minX,
-                y: primaryHeight - screen.frame.maxY,
-                width: screen.frame.width,
-                height: screen.frame.height
-            )
+            let quartzRect = ScreenGeometry.quartzRect(fromAppKit: screen.frame, primaryHeight: primaryHeight)
             guard let image = CGWindowListCreateImage(quartzRect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]) else {
                 NSLog("iCut: 抓取屏幕 \(screen.localizedName) 失败")
                 return []
