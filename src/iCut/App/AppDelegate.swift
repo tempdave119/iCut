@@ -20,9 +20,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setUpStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        // SF Symbols 在目标系统上缺失时回退为文字，保证入口始终可见
-        item.button?.image = NSImage(systemSymbolName: "crop", accessibilityDescription: "iCut")
-        item.button?.title = item.button?.image == nil ? "iCut" : ""
+        // 优先用自有模板图标，系统会按菜单栏深浅色自动着色；缺失时回退到 SF Symbol
+        if let menuBarIcon = NSImage(named: "MenuBarIcon") {
+            menuBarIcon.isTemplate = true
+            item.button?.image = menuBarIcon
+        } else if let symbol = NSImage(systemSymbolName: "crop", accessibilityDescription: "iCut") {
+            item.button?.image = symbol
+        } else {
+            item.button?.title = "iCut"
+        }
 
         let menu = NSMenu()
         let captureItem = NSMenuItem(title: "", action: #selector(startCapture), keyEquivalent: "")

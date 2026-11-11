@@ -2,13 +2,34 @@ import AppKit
 import CoreGraphics
 import ImageIO
 
-// 应用图标源图生成器：1024x1024，圆角方块铺满画布（透明背景），
-// 图形元素为虚线选框 + 四角手柄 + 右下角贴图纸片。
+// 图标生成器：产出应用图标源图与菜单栏模板图标。
 // 用法：swiftc -O scripts/make-icon.swift -o build/make-icon && ./build/make-icon assets/app-icon-1024.png
-// 改配色或形状后重新生成源图，再用 iconutil 转出 resources/iCut.icns。
+// 随后用 iconutil 把 app-icon-1024.png 转成 resources/iCut.icns。
 
 let size = 1024
 let canvas = CGFloat(size)
+
+func cgColor(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor {
+    CGColor(red: r, green: g, blue: b, alpha: a)
+}
+
+func writePNG(_ context: CGContext, to path: String) {
+    guard let image = context.makeImage(),
+          let destination = CGImageDestinationCreateWithURL(
+              URL(fileURLWithPath: path) as CFURL,
+              "public.png" as CFString,
+              1,
+              nil
+          ) else {
+        fatalError("无法写入 \(path)")
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+        fatalError("写入 PNG 失败：\(path)")
+    }
+}
+
+// MARK: - 应用图标
 
 guard let context = CGContext(
     data: nil,
@@ -22,14 +43,17 @@ guard let context = CGContext(
     fatalError("无法创建绘图上下文")
 }
 
-func cgColor(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor {
-    CGColor(red: r, green: g, blue: b, alpha: a)
-}
+// 四周留 100px 透明边距，圆角块内容区 824x824，与系统应用图标的视觉重量一致
+let inset: CGFloat = 100
+let contentScale = (canvas - inset * 2) / canvas
 
-// 圆角方块铺满画布；四角之外保持透明，避免出现白色方框
+context.saveGState()
+context.translateBy(x: inset, y: inset)
+context.scaleBy(x: contentScale, y: contentScale)
+
 let body = CGRect(x: 0, y: 0, width: canvas, height: canvas)
-let cornerRadius: CGFloat = 185
-let bodyPath = CGPath(roundedRect: body, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+// 缩放后圆角约 185，符合 macOS 图标比例
+let bodyPath = CGPath(roundedRect: body, cornerWidth: 230, cornerHeight: 230, transform: nil)
 
 context.saveGState()
 context.addPath(bodyPath)
@@ -48,7 +72,6 @@ if let gradient = CGGradient(
     )
 }
 
-// 中心微亮，让选框区域与背景有层次
 if let innerGlow = CGGradient(
     colorsSpace: CGColorSpaceCreateDeviceRGB(),
     colors: [cgColor(1, 1, 1, 0.10), cgColor(1, 1, 1, 0)] as CFArray,
@@ -65,15 +88,8 @@ if let innerGlow = CGGradient(
 }
 context.restoreGState()
 
-// 选框：CoreGraphics 原点在左下，按视觉位置换算 y
-let selectionVisualTop: CGFloat = 192
-let selectionSide: CGFloat = 571
-let selection = CGRect(
-    x: 226,
-    y: canvas - selectionVisualTop - selectionSide,
-    width: selectionSide,
-    height: selectionSide
-)
+// 选框
+let selection = CGRect(x: 226, y: canvas - 192 - 571, width: 571, height: 571)
 
 context.saveGState()
 context.setStrokeColor(cgColor(1, 1, 1, 0.96))
@@ -102,15 +118,7 @@ for corner in [
 }
 
 // 右下角贴图纸片
-let cardVisualTop: CGFloat = 574
-let cardWidth: CGFloat = 270
-let cardHeight: CGFloat = 217
-let card = CGRect(
-    x: 631,
-    y: canvas - cardVisualTop - cardHeight,
-    width: cardWidth,
-    height: cardHeight
-)
+let card = CGRect(x: 631, y: canvas - 574 - 217, width: 270, height: 217)
 
 context.saveGState()
 context.setShadow(offset: CGSize(width: 0, height: -11), blur: 30, color: cgColor(0, 0, 0, 0.28))
@@ -126,26 +134,53 @@ context.setFillColor(cgColor(0.30, 0.55, 1.0))
 context.fill(CGRect(x: card.minX, y: card.maxY - 34, width: card.width, height: 34))
 context.restoreGState()
 
-// 卡片内的内容示意
 context.setFillColor(cgColor(0.85, 0.86, 0.90))
 context.fill(CGRect(x: card.minX + 32, y: card.midY + 7, width: card.width - 64, height: 16))
 context.fill(CGRect(x: card.minX + 32, y: card.midY - 25, width: card.width - 114, height: 16))
 
-guard let image = context.makeImage() else {
-    fatalError("生成图像失败")
-}
+context.restoreGState()
 
 let outputPath = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "app-icon-1024.png"
-guard let destination = CGImageDestinationCreateWithURL(
-    URL(fileURLWithPath: outputPath) as CFURL,
-    "public.png" as CFString,
-    1,
-    nil
-) else {
-    fatalError("无法写入 \(outputPath)")
-}
-CGImageDestinationAddImage(destination, image, nil)
-guard CGImageDestinationFinalize(destination) else {
-    fatalError("写入 PNG 失败")
-}
+writePNG(context, to: outputPath)
 print("已生成 \(outputPath)")
+
+// MARK: - 菜单栏模板图标
+
+/// 菜单栏图标用纯黑 alpha 的模板图，系统会按深浅色菜单栏自动着色。
+func writeMenuBarIcon(side: CGFloat, scale: CGFloat, path: String) {
+    let pixels = Int(side * scale)
+    guard let menuContext = CGContext(
+        data: nil,
+        width: pixels,
+        height: pixels,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        fatalError("无法创建菜单栏图标上下文")
+    }
+    menuContext.scaleBy(x: scale, y: scale)
+
+    let frame = CGRect(x: 3.2, y: 3.2, width: side - 6.4, height: side - 6.4)
+    menuContext.setStrokeColor(cgColor(0, 0, 0))
+    menuContext.setLineWidth(1.4)
+    menuContext.stroke(frame)
+
+    let dot: CGFloat = 2.8
+    for corner in [
+        CGPoint(x: frame.minX, y: frame.minY),
+        CGPoint(x: frame.maxX, y: frame.minY),
+        CGPoint(x: frame.minX, y: frame.maxY),
+        CGPoint(x: frame.maxX, y: frame.maxY)
+    ] {
+        menuContext.setFillColor(cgColor(0, 0, 0))
+        menuContext.fill(CGRect(x: corner.x - dot / 2, y: corner.y - dot / 2, width: dot, height: dot))
+    }
+
+    writePNG(menuContext, to: path)
+    print("已生成 \(path)")
+}
+
+writeMenuBarIcon(side: 18, scale: 1, path: "resources/MenuBarIcon.png")
+writeMenuBarIcon(side: 18, scale: 2, path: "resources/MenuBarIcon@2x.png")

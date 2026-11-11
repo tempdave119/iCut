@@ -60,6 +60,11 @@ cp "$ROOT_DIR/resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 if [[ -f "$ROOT_DIR/resources/$APP_NAME.icns" ]]; then
   cp "$ROOT_DIR/resources/$APP_NAME.icns" "$APP_DIR/Contents/Resources/$APP_NAME.icns"
 fi
+for icon in MenuBarIcon.png MenuBarIcon@2x.png; do
+  if [[ -f "$ROOT_DIR/resources/$icon" ]]; then
+    cp "$ROOT_DIR/resources/$icon" "$APP_DIR/Contents/Resources/$icon"
+  fi
+done
 
 echo "==> 签名"
 # 有本地开发证书就用它：ad-hoc 每次重建都会改变 cdhash，屏幕录制授权会反复失效
