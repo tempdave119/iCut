@@ -234,18 +234,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSLog("iCut: 截图已取消")
 
             case .confirmed(let selection):
+                // 确认只复制；贴图由工具栏的图钉按钮单独触发
                 let copied = ClipboardService.copy(
                     image: selection.image,
                     scale: selection.frame.backingScaleFactor
                 )
+                NSLog(
+                    "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"
+                )
+
+            case .pinRequested(let selection):
                 self.pinController.pin(
                     image: selection.image,
                     scale: selection.frame.backingScaleFactor,
                     origin: Self.pinOrigin(for: selection)
                 )
-                NSLog(
-                    "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")，贴图 \(self.pinController.count) 张"
-                )
+                NSLog("iCut: 已贴图，共 \(self.pinController.count) 张")
 
             case .saveRequested(let selection):
                 let name = ImageSaver.defaultFileName()

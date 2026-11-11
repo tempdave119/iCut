@@ -14,13 +14,15 @@ final class SelectionOverlayController {
     enum CaptureOutcome {
         case confirmed(CaptureSelection)
         case saveRequested(CaptureSelection)
+        case pinRequested(CaptureSelection)
         case cancelled
     }
 
-    /// 用户结束会话的方式：确认、保存，或取消（nil）
+    /// 用户结束会话的方式：确认、保存、贴图，或取消（nil）
     private enum FinishRequest {
         case confirm(DisplayFrame, CGRect, [Annotation])
         case save(DisplayFrame, CGRect, [Annotation])
+        case pin(DisplayFrame, CGRect, [Annotation])
     }
 
     private var windows: [SelectionOverlayWindow] = []
@@ -47,6 +49,9 @@ final class SelectionOverlayController {
             }
             window.overlayView.onSave = { [weak self] rect, annotations in
                 self?.finish(.save(frame, rect, annotations))
+            }
+            window.overlayView.onPin = { [weak self] rect, annotations in
+                self?.finish(.pin(frame, rect, annotations))
             }
             window.overlayView.onCancel = { [weak self] in
                 self?.finish(nil)
@@ -86,25 +91,39 @@ final class SelectionOverlayController {
         let frame: DisplayFrame
         let rect: CGRect
         let annotations: [Annotation]
-        let isSaveRequest: Bool
+        enum Kind { case confirm, save, pin }
+        let kind: Kind
         switch request {
         case .confirm(let confirmedFrame, let confirmedRect, let confirmedAnnotations):
             frame = confirmedFrame
             rect = confirmedRect
             annotations = confirmedAnnotations
-            isSaveRequest = false
+            kind = .confirm
         case .save(let savedFrame, let savedRect, let savedAnnotations):
             frame = savedFrame
             rect = savedRect
             annotations = savedAnnotations
-            isSaveRequest = true
+            kind = .save
+        case .pin(let pinnedFrame, let pinnedRect, let pinnedAnnotations):
+            frame = pinnedFrame
+            rect = pinnedRect
+            annotations = pinnedAnnotations
+            kind = .pin
         }
 
         guard let selection = crop(frame: frame, rectInScreen: rect, annotations: annotations) else {
             completion?(.cancelled)
             return
         }
-        completion?(isSaveRequest ? .saveRequested(selection) : .confirmed(selection))
+
+        switch kind {
+        case .confirm:
+            completion?(.confirmed(selection))
+        case .save:
+            completion?(.saveRequested(selection))
+        case .pin:
+            completion?(.pinRequested(selection))
+        }
     }
 
     private func crop(frame: DisplayFrame, rectInScreen rect: CGRect, annotations: [Annotation]) -> CaptureSelection? {

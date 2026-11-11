@@ -32,9 +32,9 @@ final class SelectionOverlayView: NSView {
 
     private enum BarAction {
         case tool(Annotation.Kind)
-        case color(AnnotationColor)
         case undo
         case save
+        case pin
         case cancel
         case confirm
     }
@@ -81,6 +81,7 @@ final class SelectionOverlayView: NSView {
 
     var onConfirm: ((CGRect, [Annotation]) -> Void)?
     var onSave: ((CGRect, [Annotation]) -> Void)?
+    var onPin: ((CGRect, [Annotation]) -> Void)?
     var onCancel: (() -> Void)?
 
     override var isFlipped: Bool { true }
@@ -122,10 +123,7 @@ final class SelectionOverlayView: NSView {
     private static let barGap: CGFloat = 14
 
     private var barActions: [BarAction] {
-        var actions: [BarAction] = Annotation.Kind.allCases.map { .tool($0) }
-        actions += AnnotationColor.allCases.map { .color($0) }
-        actions += [.undo, .save, .cancel, .confirm]
-        return actions
+        Annotation.Kind.allCases.map { .tool($0) } + [.undo, .save, .pin, .cancel, .confirm]
     }
 
     private func barFrame() -> CGRect {
@@ -133,7 +131,7 @@ final class SelectionOverlayView: NSView {
         let width = count * Self.barItemSize
             + (count - 1) * Self.barItemSpacing
             + Self.barPadding * 2
-            + Self.barGap * 2
+            + Self.barGap
         let height = Self.barItemSize + Self.barPadding * 2
 
         guard let selection = completedRect ?? (state.isUsable ? state.rect : nil),
@@ -158,17 +156,13 @@ final class SelectionOverlayView: NSView {
         return CGRect(x: originX, y: originY, width: width, height: height)
     }
 
-    /// 每个按钮的矩形；工具与颜色之间、颜色与动作之间各留一个 gap
+    /// 每个按钮的矩形；工具与动作之间留一个 gap
     private func barItemRect(at index: Int) -> CGRect {
         let bar = barFrame()
         let toolCount = Annotation.Kind.allCases.count
-        let colorCount = AnnotationColor.allCases.count
 
         var offset = Self.barPadding
         if index >= toolCount {
-            offset += Self.barGap
-        }
-        if index >= toolCount + colorCount {
             offset += Self.barGap
         }
         offset += CGFloat(index) * (Self.barItemSize + Self.barItemSpacing)
@@ -218,20 +212,13 @@ final class SelectionOverlayView: NSView {
         case .tool(let kind):
             glyph = symbol(for: kind)
             isActive = activeTool == kind
-        case .color(let color):
-            color.nsColor.setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 8, dy: 8)).fill()
-            if currentColor == color {
-                NSColor.white.setStroke()
-                let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 5.5, dy: 5.5))
-                ring.lineWidth = 1.6
-                ring.stroke()
-            }
-            return
         case .undo:
             glyph = "↶"
         case .save:
             glyph = "↓"
+        case .pin:
+            drawTintedSymbol("pin.fill", in: rect, color: tint, pointSize: 15)
+            return
         case .cancel:
             glyph = "✕"
         case .confirm:
@@ -265,6 +252,72 @@ final class SelectionOverlayView: NSView {
         case .text: return "T"
         case .mosaic: return "▦"
         case .number: return "①"
+        }
+    }
+
+    /// SF Symbol 需要手动染色才能在深色底上可见
+    private func drawTintedSymbol(_ name: String, in rect: CGRect, color: NSColor, pointSize: CGFloat) {
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        guard let configured = base.withSymbolConfiguration(config) else { return }
+        let size = configured.size
+
+        let tinted = NSImage(size: size, flipped: false) { drawRect in
+            color.set()
+            configured.draw(in: drawRect)
+            drawRect.fill(using: .sourceAtop)
+            return true
+        }
+        tinted.draw(in: CGRect(
+            x: rect.midX - size.width / 2,
+            y: rect.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        ))
+    }
+
+    // MARK: - 颜色面板（工具激活时弹出）
+
+    private static let paletteDotSize: CGFloat = 24
+    private static let paletteDotSpacing: CGFloat = 8
+
+    private func paletteFrame() -> CGRect? {
+        guard activeTool != nil else { return nil }
+        let bar = barFrame()
+        let count = CGFloat(AnnotationColor.allCases.count)
+        let width = count * Self.paletteDotSize + (count - 1) * Self.paletteDotSpacing + 16
+        return CGRect(x: bar.minX, y: bar.minY - 38, width: width, height: 32)
+    }
+
+    private func paletteDotRect(at index: Int) -> CGRect? {
+        guard let frame = paletteFrame() else { return nil }
+        return CGRect(
+            x: frame.minX + 8 + CGFloat(index) * (Self.paletteDotSize + Self.paletteDotSpacing),
+            y: frame.midY - Self.paletteDotSize / 2,
+            width: Self.paletteDotSize,
+            height: Self.paletteDotSize
+        )
+    }
+
+    private func drawPalette() {
+        guard let frame = paletteFrame() else { return }
+        NSColor.black.withAlphaComponent(0.72).setFill()
+        let background = NSBezierPath(roundedRect: frame, xRadius: 8, yRadius: 8)
+        background.fill()
+        NSColor.white.withAlphaComponent(0.15).setStroke()
+        background.lineWidth = 1
+        background.stroke()
+
+        for (index, color) in AnnotationColor.allCases.enumerated() {
+            guard let dot = paletteDotRect(at: index) else { continue }
+            color.nsColor.setFill()
+            NSBezierPath(ovalIn: dot.insetBy(dx: 2, dy: 2)).fill()
+            if currentColor == color {
+                NSColor.white.setStroke()
+                let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
+                ring.lineWidth = 1.6
+                ring.stroke()
+            }
         }
     }
 
@@ -340,6 +393,7 @@ final class SelectionOverlayView: NSView {
 
         if completedRect != nil || state.isUsable {
             drawBottomBar()
+            drawPalette()
         }
     }
 
@@ -476,6 +530,18 @@ final class SelectionOverlayView: NSView {
         // 文字输入进行中，点别处先提交
         if textInput != nil {
             commitTextInput()
+        }
+
+        // 颜色面板（工具激活时弹出在工具栏上方）
+        if let frame = paletteFrame(), frame.insetBy(dx: -6, dy: -6).contains(point) {
+            for (index, color) in AnnotationColor.allCases.enumerated() {
+                if let dot = paletteDotRect(at: index), dot.insetBy(dx: -2, dy: -2).contains(point) {
+                    currentColor = color
+                    needsDisplay = true
+                    return
+                }
+            }
+            return
         }
 
         // 底栏优先
@@ -653,14 +719,15 @@ final class SelectionOverlayView: NSView {
             activeTool = (activeTool == kind) ? nil : kind
             NSLog("iCut: 标注工具 = \(activeTool?.displayName ?? "无")")
             needsDisplay = true
-        case .color(let color):
-            currentColor = color
-            needsDisplay = true
         case .undo:
             undo()
         case .save:
             if let selection = completedRect ?? (state.isUsable ? state.rect : nil) {
                 onSave?(selection, annotations)
+            }
+        case .pin:
+            if let selection = completedRect ?? (state.isUsable ? state.rect : nil) {
+                onPin?(selection, annotations)
             }
         case .cancel:
             onCancel?()
