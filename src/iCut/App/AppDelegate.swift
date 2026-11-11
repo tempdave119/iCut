@@ -42,6 +42,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shortcutMenuItem = shortcutItem
 
         menu.addItem(.separator())
+        let hideItem = NSMenuItem(title: "隐藏全部贴图", action: #selector(hideAllPins), keyEquivalent: "")
+        hideItem.target = self
+        menu.addItem(hideItem)
+        let showItem = NSMenuItem(title: "显示全部贴图", action: #selector(showAllPins), keyEquivalent: "")
+        showItem.target = self
+        menu.addItem(showItem)
+
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出 iCut", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         item.menu = menu
@@ -151,6 +159,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    @objc private func hideAllPins() {
+        pinController.hideAll()
+    }
+
+    @objc private func showAllPins() {
+        pinController.showAll()
+    }
+
     // 截图流程：幂等检查 → 权限 → 抓屏 → 覆盖层框选
     @objc private func startCapture() {
         guard !selectionController.isActive else {
@@ -180,27 +196,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        selectionController.begin(frames: frames) { [weak self] selection in
+        selectionController.begin(frames: frames) { [weak self] outcome in
             guard let self else { return }
             self.pinController.restoreAfterCapture()
 
-            guard let selection else {
+            switch outcome {
+            case .cancelled:
                 NSLog("iCut: 截图已取消")
-                return
-            }
 
-            let copied = ClipboardService.copy(
-                image: selection.image,
-                scale: selection.frame.backingScaleFactor
-            )
-            self.pinController.pin(
-                image: selection.image,
-                scale: selection.frame.backingScaleFactor,
-                origin: Self.pinOrigin(for: selection)
-            )
-            NSLog(
-                "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")，贴图 \(self.pinController.count) 张"
-            )
+            case .confirmed(let selection):
+                let copied = ClipboardService.copy(
+                    image: selection.image,
+                    scale: selection.frame.backingScaleFactor
+                )
+                self.pinController.pin(
+                    image: selection.image,
+                    scale: selection.frame.backingScaleFactor,
+                    origin: Self.pinOrigin(for: selection)
+                )
+                NSLog(
+                    "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")，贴图 \(self.pinController.count) 张"
+                )
+
+            case .saveRequested(let selection):
+                let name = ImageSaver.defaultFileName()
+                if let url = ImageSaver.savePNG(
+                    image: selection.image,
+                    scale: selection.frame.backingScaleFactor,
+                    defaultName: name
+                ) {
+                    NSLog("iCut: 已保存到 \(url.path)")
+                } else {
+                    NSLog("iCut: 保存已取消或失败")
+                }
+            }
         }
     }
 

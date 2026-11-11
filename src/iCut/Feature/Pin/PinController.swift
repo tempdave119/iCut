@@ -29,4 +29,13 @@ final class PinController {
         hiddenForCapture.removeAll()
         windows.forEach { $0.orderFront(nil) }
     }
+
+    /// 菜单里的批量隐藏/恢复，与截图期的临时隐藏区分开
+    func hideAll() {
+        pins.forEach { $0.orderOut(nil) }
+    }
+
+    func showAll() {
+        pins.forEach { $0.orderFront(nil) }
+    }
 }

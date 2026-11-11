@@ -6,15 +6,28 @@ final class SelectionOverlayController {
         let frame: DisplayFrame
         /// 屏内局部坐标（点，原点左上）
         let rectInScreen: CGRect
-        /// 已按 backingScaleFactor 裁好的像素图
+        /// 已按 backingScaleFactor 裁好、并渲染上标注的像素图
         let image: CGImage
+        let annotations: [Annotation]
+    }
+
+    enum CaptureOutcome {
+        case confirmed(CaptureSelection)
+        case saveRequested(CaptureSelection)
+        case cancelled
+    }
+
+    /// 用户结束会话的方式：确认、保存，或取消（nil）
+    private enum FinishRequest {
+        case confirm(DisplayFrame, CGRect, [Annotation])
+        case save(DisplayFrame, CGRect, [Annotation])
     }
 
     private var windows: [SelectionOverlayWindow] = []
-    private var completion: ((CaptureSelection?) -> Void)?
+    private var completion: ((CaptureOutcome) -> Void)?
     private(set) var isActive = false
 
-    func begin(frames: [DisplayFrame], completion: @escaping (CaptureSelection?) -> Void) {
+    func begin(frames: [DisplayFrame], completion: @escaping (CaptureOutcome) -> Void) {
         guard !isActive, !frames.isEmpty else { return }
         isActive = true
         self.completion = completion
@@ -29,8 +42,11 @@ final class SelectionOverlayController {
 
         windows = frames.map { frame in
             let window = SelectionOverlayWindow(frame: frame)
-            window.overlayView.onConfirm = { [weak self] rect in
-                self?.finish((frame, rect))
+            window.overlayView.onConfirm = { [weak self] rect, annotations in
+                self?.finish(.confirm(frame, rect, annotations))
+            }
+            window.overlayView.onSave = { [weak self] rect, annotations in
+                self?.finish(.save(frame, rect, annotations))
             }
             window.overlayView.onCancel = { [weak self] in
                 self?.finish(nil)
@@ -47,7 +63,7 @@ final class SelectionOverlayController {
         finish(nil)
     }
 
-    private func finish(_ result: (frame: DisplayFrame, rect: CGRect)?) {
+    private func finish(_ request: FinishRequest?) {
         guard isActive else { return }
         isActive = false
 
@@ -62,18 +78,49 @@ final class SelectionOverlayController {
         let completion = self.completion
         self.completion = nil
 
-        guard let (frame, rect) = result else {
-            completion?(nil)
+        guard let request else {
+            completion?(.cancelled)
             return
         }
 
+        let frame: DisplayFrame
+        let rect: CGRect
+        let annotations: [Annotation]
+        let isSaveRequest: Bool
+        switch request {
+        case .confirm(let confirmedFrame, let confirmedRect, let confirmedAnnotations):
+            frame = confirmedFrame
+            rect = confirmedRect
+            annotations = confirmedAnnotations
+            isSaveRequest = false
+        case .save(let savedFrame, let savedRect, let savedAnnotations):
+            frame = savedFrame
+            rect = savedRect
+            annotations = savedAnnotations
+            isSaveRequest = true
+        }
+
+        guard let selection = crop(frame: frame, rectInScreen: rect, annotations: annotations) else {
+            completion?(.cancelled)
+            return
+        }
+        completion?(isSaveRequest ? .saveRequested(selection) : .confirmed(selection))
+    }
+
+    private func crop(frame: DisplayFrame, rectInScreen rect: CGRect, annotations: [Annotation]) -> CaptureSelection? {
         // 视图坐标与 CGImage 像素坐标同为左上原点，换算与取整统一交给 ScreenGeometry
         let pixelRect = ScreenGeometry.pixelRect(fromPoint: rect, scale: frame.backingScaleFactor)
         guard let cropped = frame.image.cropping(to: pixelRect) else {
             NSLog("iCut: 裁切选区失败 rect=\(pixelRect)")
-            completion?(nil)
-            return
+            return nil
         }
-        completion?(CaptureSelection(frame: frame, rectInScreen: rect, image: cropped))
+        // 标注先渲染进像素图，后续剪贴板/贴图/保存都直接用最终图
+        let finalImage = AnnotationRenderer.render(
+            base: cropped,
+            annotations: annotations,
+            selectionOrigin: rect.origin,
+            scale: frame.backingScaleFactor
+        )
+        return CaptureSelection(frame: frame, rectInScreen: rect, image: finalImage, annotations: annotations)
     }
 }

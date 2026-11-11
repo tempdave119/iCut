@@ -5,6 +5,8 @@ import CoreGraphics
 struct DisplayFrame {
     let displayID: CGDirectDisplayID
     let screenFrame: CGRect
+    /// Quartz 全局坐标（原点主屏左上），用于窗口命中测试
+    let quartzFrame: CGRect
     let backingScaleFactor: CGFloat
     let image: CGImage
 }
@@ -49,6 +51,7 @@ enum ScreenCapture {
                 DisplayFrame(
                     displayID: displayID,
                     screenFrame: screen.frame,
+                    quartzFrame: quartzRect,
                     backingScaleFactor: screen.backingScaleFactor,
                     image: image
                 )
