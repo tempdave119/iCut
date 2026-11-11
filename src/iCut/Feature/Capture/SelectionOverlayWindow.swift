@@ -31,12 +31,20 @@ final class SelectionOverlayView: NSView {
     // MARK: - 底栏动作
 
     private enum BarAction {
+        case shapes
         case tool(Annotation.Kind)
+        case colors
         case undo
         case save
         case pin
         case cancel
         case confirm
+    }
+
+    /// 工具栏下方的一次性弹层；同一时间只开一个
+    private enum PopupPanel {
+        case shapes
+        case colors
     }
 
     // MARK: - 选区手柄
@@ -64,6 +72,9 @@ final class SelectionOverlayView: NSView {
 
     // 标注状态
     private var activeTool: Annotation.Kind?
+    /// 形状按钮在工具未激活时回显上次选的形状
+    private var lastShape: Annotation.Kind = .rectangle
+    private var openPanel: PopupPanel?
     private var annotations: [Annotation] = []
     private var redoStack: [Annotation] = []
     private var draft: Annotation?
@@ -71,6 +82,10 @@ final class SelectionOverlayView: NSView {
     private var currentColor: AnnotationColor = .red
     private var textInput: AnnotationTextField?
     private var textAnchor: CGPoint?
+
+    // 悬停高亮（自绘按钮没有子视图，需要自己跟踪）
+    private var hoveredBarIndex: Int?
+    private var hoveredPanelIndex: Int?
 
     // 选区调整
     private var activeHandle: SelectionHandle?
@@ -87,6 +102,9 @@ final class SelectionOverlayView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    // 窗口不在 key 状态时，第一击默认只激活窗口，会让工具栏的第一次点击丢失
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     init(frame: DisplayFrame) {
         frameImage = frame
         super.init(frame: NSRect(origin: .zero, size: frame.screenFrame.size))
@@ -98,11 +116,11 @@ final class SelectionOverlayView: NSView {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
-        // 工具栏与颜色面板上用箭头，避免误以为还在框选
+        // 工具栏与弹层上用箭头，避免误以为还在框选
         if completedRect != nil {
             addCursorRect(barFrame(), cursor: .arrow)
-            if let palette = paletteFrame() {
-                addCursorRect(palette, cursor: .arrow)
+            if let panel = panelFrame() {
+                addCursorRect(panel, cursor: .arrow)
             }
         }
     }
@@ -114,7 +132,7 @@ final class SelectionOverlayView: NSView {
         }
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.mouseMoved, .activeAlways, .inVisibleRect],
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
         )
@@ -128,9 +146,15 @@ final class SelectionOverlayView: NSView {
     private static let barItemSpacing: CGFloat = 4
     private static let barPadding: CGFloat = 10
     private static let barGap: CGFloat = 14
+    /// 工具区固定 6 项（形状 + 4 个独立工具 + 颜色），之后是动作区
+    private static let toolbarSectionCount = 6
+    private static let shapeTools: [Annotation.Kind] = [.rectangle, .ellipse, .line, .arrow]
 
     private var barActions: [BarAction] {
-        Annotation.Kind.allCases.map { .tool($0) } + [.undo, .save, .pin, .cancel, .confirm]
+        var actions: [BarAction] = [.shapes]
+        actions += [.tool(.freehand), .tool(.text), .tool(.mosaic), .tool(.number)]
+        actions += [.colors, .undo, .save, .pin, .cancel, .confirm]
+        return actions
     }
 
     private func barFrame() -> CGRect {
@@ -143,8 +167,8 @@ final class SelectionOverlayView: NSView {
 
         guard let selection = completedRect,
               toolbarPosition == .followSelection else {
-            // 固定底部，或还没松手时都放屏幕底部居中
-            return CGRect(x: (bounds.width - width) / 2, y: bounds.height - height - 36, width: width, height: height)
+            // 固定底部时抬高留出弹层高度，保证面板能在工具条下方展开
+            return CGRect(x: (bounds.width - width) / 2, y: bounds.height - height - 84, width: width, height: height)
         }
 
         // 默认贴选区下方；下方放不下翻到上方，再放不下就贴选区内底部
@@ -163,13 +187,12 @@ final class SelectionOverlayView: NSView {
         return CGRect(x: originX, y: originY, width: width, height: height)
     }
 
-    /// 每个按钮的矩形；工具与动作之间留一个 gap
+    /// 每个按钮的矩形；工具区与动作区之间留一个 gap
     private func barItemRect(at index: Int) -> CGRect {
         let bar = barFrame()
-        let toolCount = Annotation.Kind.allCases.count
 
         var offset = Self.barPadding
-        if index >= toolCount {
+        if index >= Self.toolbarSectionCount {
             offset += Self.barGap
         }
         offset += CGFloat(index) * (Self.barItemSize + Self.barItemSpacing)
@@ -195,59 +218,116 @@ final class SelectionOverlayView: NSView {
         return nil
     }
 
+    private static let iconColor = NSColor(calibratedWhite: 0.25, alpha: 1)
+    private static let disabledIconColor = NSColor(calibratedWhite: 0.72, alpha: 1)
+
     private func drawBottomBar() {
         let bar = barFrame()
-        NSColor.black.withAlphaComponent(0.72).setFill()
-        let background = NSBezierPath(roundedRect: bar, xRadius: 10, yRadius: 10)
-        background.fill()
-        NSColor.white.withAlphaComponent(0.15).setStroke()
-        background.lineWidth = 1
-        background.stroke()
-
-        let actions = barActions
-        for (index, action) in actions.enumerated() {
-            let rect = barItemRect(at: index)
-            drawBarItem(action, in: rect)
+        drawPopupBackground(bar, cornerRadius: 10)
+        for (index, action) in barActions.enumerated() {
+            drawBarItem(action, index: index, in: barItemRect(at: index))
         }
     }
 
-    private func drawBarItem(_ action: BarAction, in rect: CGRect) {
-        var isActive = false
-        var glyph = ""
-        var tint = NSColor.white
+    /// 工具条与弹层共用的浅色底：白底 + 阴影 + 细描边
+    private func drawPopupBackground(_ rect: CGRect, cornerRadius: CGFloat) {
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+        shadow.shadowBlurRadius = 8
+        shadow.shadowOffset = NSSize(width: 0, height: 2)
+        shadow.set()
+        NSColor.white.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+        NSGraphicsContext.restoreGraphicsState()
 
-        switch action {
-        case .tool(let kind):
-            glyph = symbol(for: kind)
-            isActive = activeTool == kind
-        case .undo:
-            glyph = "↶"
-        case .save:
-            glyph = "↓"
-        case .pin:
-            drawTintedSymbol("pin.fill", in: rect, color: tint, pointSize: 15)
-            return
-        case .cancel:
-            glyph = "✕"
-        case .confirm:
-            glyph = "✓"
-            tint = NSColor.systemBlue
-        }
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        let border = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+        border.lineWidth = 1
+        border.stroke()
+    }
+
+    /// 悬停时铺一层浅灰底并加阴影，做出浮起效果
+    private func drawHoverBackground(in rect: CGRect) {
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.25)
+        shadow.shadowBlurRadius = 4
+        shadow.shadowOffset = NSSize(width: 0, height: 2)
+        shadow.set()
+        NSColor(calibratedWhite: 0.93, alpha: 1).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawBarItem(_ action: BarAction, index: Int, in rect: CGRect) {
+        let isActive = isActive(action)
+        let isEnabled = isEnabled(action)
+        let isHovered = hoveredBarIndex == index && isEnabled
+        let iconColor = isActive ? NSColor.white : (isEnabled ? Self.iconColor : Self.disabledIconColor)
 
         if isActive {
-            NSColor.systemBlue.withAlphaComponent(0.85).setFill()
+            NSColor.systemBlue.setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6).fill()
+        } else if isHovered {
+            drawHoverBackground(in: rect.insetBy(dx: 2, dy: 2))
         }
 
+        switch action {
+        case .shapes:
+            let shown = activeTool.flatMap { Self.shapeTools.contains($0) ? $0 : nil } ?? lastShape
+            drawGlyph(symbol(for: shown), in: rect, color: iconColor, weight: .medium)
+        case .tool(let kind):
+            drawGlyph(symbol(for: kind), in: rect, color: iconColor, weight: .medium)
+        case .colors:
+            drawColorDot(in: rect)
+        case .undo:
+            drawTintedSymbol("arrow.uturn.backward", in: rect, color: iconColor, pointSize: 15)
+        case .save:
+            drawTintedSymbol("square.and.arrow.down", in: rect, color: iconColor, pointSize: 15)
+        case .pin:
+            drawTintedSymbol("pin.fill", in: rect, color: iconColor, pointSize: 15)
+        case .cancel:
+            drawGlyph("✕", in: rect, color: iconColor, weight: .regular)
+        case .confirm:
+            drawGlyph("✓", in: rect, color: .systemBlue, weight: .semibold)
+        }
+    }
+
+    private func isActive(_ action: BarAction) -> Bool {
+        switch action {
+        case .shapes: return activeTool.map { Self.shapeTools.contains($0) } ?? false
+        case .tool(let kind): return activeTool == kind
+        case .colors: return openPanel == .colors
+        default: return false
+        }
+    }
+
+    private func isEnabled(_ action: BarAction) -> Bool {
+        if case .undo = action { return !annotations.isEmpty }
+        return true
+    }
+
+    private func drawGlyph(_ glyph: String, in rect: CGRect, color: NSColor, weight: NSFont.Weight) {
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 17, weight: isActive ? .bold : .regular),
-            .foregroundColor: tint
+            .font: NSFont.systemFont(ofSize: 17, weight: weight),
+            .foregroundColor: color
         ]
         let size = glyph.size(withAttributes: attributes)
         glyph.draw(
             at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
             withAttributes: attributes
         )
+    }
+
+    private func drawColorDot(in rect: CGRect) {
+        let dot = CGRect(x: rect.midX - 9, y: rect.midY - 9, width: 18, height: 18)
+        currentColor.nsColor.setFill()
+        NSBezierPath(ovalIn: dot).fill()
+        NSColor.black.withAlphaComponent(0.25).setStroke()
+        let ring = NSBezierPath(ovalIn: dot)
+        ring.lineWidth = 1
+        ring.stroke()
     }
 
     private func symbol(for kind: Annotation.Kind) -> String {
@@ -263,7 +343,7 @@ final class SelectionOverlayView: NSView {
         }
     }
 
-    /// SF Symbol 需要手动染色才能在深色底上可见
+    /// SF Symbol 是模板图，需要按当前图标色重新染色
     private func drawTintedSymbol(_ name: String, in rect: CGRect, color: NSColor, pointSize: CGFloat) {
         guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
@@ -284,48 +364,193 @@ final class SelectionOverlayView: NSView {
         ))
     }
 
-    // MARK: - 颜色面板（工具激活时弹出）
+    // MARK: - 弹层（形状 / 颜色，点击对应按钮后在工具条下方展开）
 
+    private static let panelPadding: CGFloat = 8
+    private static let panelButtonSize: CGFloat = 32
+    private static let panelSpacing: CGFloat = 6
     private static let paletteDotSize: CGFloat = 24
     private static let paletteDotSpacing: CGFloat = 8
+    private static let panelGap: CGFloat = 8
 
-    private func paletteFrame() -> CGRect? {
-        guard activeTool != nil else { return nil }
+    private func panelFrame() -> CGRect? {
+        guard let panel = openPanel else { return nil }
         let bar = barFrame()
-        let count = CGFloat(AnnotationColor.allCases.count)
-        let width = count * Self.paletteDotSize + (count - 1) * Self.paletteDotSpacing + 16
-        return CGRect(x: bar.minX, y: bar.minY - 38, width: width, height: 32)
+        let size: CGSize
+        switch panel {
+        case .shapes:
+            let count = CGFloat(Self.shapeTools.count)
+            size = CGSize(
+                width: count * Self.panelButtonSize + (count - 1) * Self.panelSpacing + Self.panelPadding * 2,
+                height: Self.panelButtonSize + Self.panelPadding * 2
+            )
+        case .colors:
+            let count = CGFloat(AnnotationColor.allCases.count)
+            size = CGSize(
+                width: count * Self.paletteDotSize + (count - 1) * Self.paletteDotSpacing + Self.panelPadding * 2,
+                height: Self.paletteDotSize + Self.panelPadding * 2
+            )
+        }
+
+        // 默认在工具条下方，屏幕底部放不下时翻到上方
+        var originY = bar.maxY + Self.panelGap
+        if originY + size.height > bounds.height - 8 {
+            originY = bar.minY - size.height - Self.panelGap
+        }
+        let originX = min(max(8, bar.minX), max(8, bounds.width - size.width - 8))
+        return CGRect(x: originX, y: originY, width: size.width, height: size.height)
     }
 
-    private func paletteDotRect(at index: Int) -> CGRect? {
-        guard let frame = paletteFrame() else { return nil }
-        return CGRect(
-            x: frame.minX + 8 + CGFloat(index) * (Self.paletteDotSize + Self.paletteDotSpacing),
-            y: frame.midY - Self.paletteDotSize / 2,
-            width: Self.paletteDotSize,
-            height: Self.paletteDotSize
+    private func panelItemRect(at index: Int) -> CGRect? {
+        guard let frame = panelFrame(), let panel = openPanel else { return nil }
+        switch panel {
+        case .shapes:
+            return CGRect(
+                x: frame.minX + Self.panelPadding + CGFloat(index) * (Self.panelButtonSize + Self.panelSpacing),
+                y: frame.minY + Self.panelPadding,
+                width: Self.panelButtonSize,
+                height: Self.panelButtonSize
+            )
+        case .colors:
+            return CGRect(
+                x: frame.minX + Self.panelPadding + CGFloat(index) * (Self.paletteDotSize + Self.paletteDotSpacing),
+                y: frame.midY - Self.paletteDotSize / 2,
+                width: Self.paletteDotSize,
+                height: Self.paletteDotSize
+            )
+        }
+    }
+
+    private func panelItemCount() -> Int {
+        switch openPanel {
+        case .shapes: return Self.shapeTools.count
+        case .colors: return AnnotationColor.allCases.count
+        case nil: return 0
+        }
+    }
+
+    private func panelItemIndex(at point: CGPoint) -> Int? {
+        guard let frame = panelFrame(), frame.contains(point) else { return nil }
+        for index in 0..<panelItemCount() where panelItemRect(at: index)?.contains(point) == true {
+            return index
+        }
+        return nil
+    }
+
+    private func drawPopupPanel() {
+        guard let frame = panelFrame(), let panel = openPanel else { return }
+        drawPopupBackground(frame, cornerRadius: 10)
+
+        switch panel {
+        case .shapes:
+            for (index, kind) in Self.shapeTools.enumerated() {
+                guard let rect = panelItemRect(at: index) else { continue }
+                let isCurrent = activeTool == kind
+                if isCurrent {
+                    NSColor.systemBlue.setFill()
+                    NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+                } else if hoveredPanelIndex == index {
+                    NSColor(calibratedWhite: 0.93, alpha: 1).setFill()
+                    NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+                }
+                drawGlyph(
+                    symbol(for: kind),
+                    in: rect,
+                    color: isCurrent ? .white : Self.iconColor,
+                    weight: .medium
+                )
+            }
+        case .colors:
+            for (index, color) in AnnotationColor.allCases.enumerated() {
+                guard let dot = panelItemRect(at: index) else { continue }
+                if hoveredPanelIndex == index {
+                    NSColor(calibratedWhite: 0.93, alpha: 1).setFill()
+                    NSBezierPath(ovalIn: dot.insetBy(dx: -3, dy: -3)).fill()
+                }
+                color.nsColor.setFill()
+                NSBezierPath(ovalIn: dot.insetBy(dx: 1, dy: 1)).fill()
+                if currentColor == color {
+                    NSColor.systemBlue.setStroke()
+                    let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
+                    ring.lineWidth = 2
+                    ring.stroke()
+                } else {
+                    NSColor.black.withAlphaComponent(0.2).setStroke()
+                    let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
+                    ring.lineWidth = 1
+                    ring.stroke()
+                }
+            }
+        }
+    }
+
+    /// 工具激活后在工具条上方提示下一步操作，避免用户只看到高亮却不知道要拖拽
+    private func drawToolHint() {
+        // 面板展开时本身已是线索，再叠一层提示会互相遮挡
+        guard openPanel == nil, let kind = activeTool else { return }
+        let text = hintText(for: kind)
+        let bar = barFrame()
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: NSColor.white
+        ]
+        let size = text.size(withAttributes: textAttributes)
+        let padding = CGSize(width: 8, height: 4)
+        let rect = CGRect(
+            x: bar.midX - (size.width + padding.width * 2) / 2,
+            y: bar.minY - size.height - padding.height * 2 - 8,
+            width: size.width + padding.width * 2,
+            height: size.height + padding.height * 2
+        )
+        guard rect.minY >= 0 else { return }
+
+        NSColor.black.withAlphaComponent(0.7).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
+        text.draw(
+            at: CGPoint(x: rect.minX + padding.width, y: rect.minY + padding.height),
+            withAttributes: textAttributes
         )
     }
 
-    private func drawPalette() {
-        guard let frame = paletteFrame() else { return }
-        NSColor.black.withAlphaComponent(0.72).setFill()
-        let background = NSBezierPath(roundedRect: frame, xRadius: 8, yRadius: 8)
-        background.fill()
-        NSColor.white.withAlphaComponent(0.15).setStroke()
-        background.lineWidth = 1
-        background.stroke()
+    private func hintText(for kind: Annotation.Kind) -> String {
+        switch kind {
+        case .text: return "点击选区内位置后输入文字"
+        case .number: return "点击选区内位置放置序号"
+        default: return "在选区内拖动绘制"
+        }
+    }
 
-        for (index, color) in AnnotationColor.allCases.enumerated() {
-            guard let dot = paletteDotRect(at: index) else { continue }
-            color.nsColor.setFill()
-            NSBezierPath(ovalIn: dot.insetBy(dx: 2, dy: 2)).fill()
-            if currentColor == color {
-                NSColor.white.setStroke()
-                let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
-                ring.lineWidth = 1.6
-                ring.stroke()
-            }
+    // MARK: - 悬停提示
+
+    /// 自绘按钮没有文字标签，靠系统 tooltip 说明用途与快捷键
+    private func refreshToolTips() {
+        removeAllToolTips()
+        guard completedRect != nil else { return }
+        for index in barActions.indices {
+            addToolTip(barItemRect(at: index), owner: self, userData: nil)
+        }
+    }
+
+    func view(
+        _ view: NSView,
+        stringForToolTip tag: NSView.ToolTipTag,
+        point: NSPoint,
+        userData data: UnsafeMutableRawPointer?
+    ) -> String {
+        guard let action = barAction(at: point) else { return "" }
+        switch action {
+        case .shapes:
+            return "形状（当前：\(lastShape.displayName)）\n点击选择矩形 / 椭圆 / 直线 / 箭头"
+        case .tool(let kind):
+            return "\(kind.displayName)（\(kind.shortcut)）\n\(hintText(for: kind))"
+        case .colors:
+            return "颜色\n点击在工具条下方展开调色板"
+        case .undo:
+            return annotations.isEmpty ? "撤销：暂无可撤销的标注" : "撤销（⌘Z）"
+        case .save: return "保存为 PNG（⌘S）"
+        case .pin: return "贴到屏幕上"
+        case .cancel: return "取消截图（Esc）"
+        case .confirm: return "完成并复制到剪贴板（Enter）"
         }
     }
 
@@ -401,7 +626,8 @@ final class SelectionOverlayView: NSView {
 
         if completedRect != nil {
             drawBottomBar()
-            drawPalette()
+            drawPopupPanel()
+            drawToolHint()
         }
     }
 
@@ -525,9 +751,39 @@ final class SelectionOverlayView: NSView {
     // MARK: - 鼠标
 
     override func mouseMoved(with event: NSEvent) {
-        guard completedRect == nil, !state.isDragging, pressedWindowRect == nil else { return }
         let point = convert(event.locationInWindow, from: nil)
+
+        // 工具栏与弹层的悬停高亮
+        if completedRect != nil {
+            updateHover(at: point)
+            return
+        }
+
+        guard !state.isDragging, pressedWindowRect == nil else { return }
         hoveredWindowRect = detectedWindowRect(at: point)
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard hoveredBarIndex != nil || hoveredPanelIndex != nil else { return }
+        hoveredBarIndex = nil
+        hoveredPanelIndex = nil
+        needsDisplay = true
+    }
+
+    /// 只在悬停目标变化时重绘，避免高频 mouseMoved 反复重画整屏
+    private func updateHover(at point: CGPoint) {
+        var barIndex: Int?
+        if barFrame().insetBy(dx: -6, dy: -6).contains(point) {
+            for index in barActions.indices where barItemRect(at: index).contains(point) {
+                barIndex = index
+                break
+            }
+        }
+        let panelIndex = panelItemIndex(at: point)
+        guard barIndex != hoveredBarIndex || panelIndex != hoveredPanelIndex else { return }
+        hoveredBarIndex = barIndex
+        hoveredPanelIndex = panelIndex
         needsDisplay = true
     }
 
@@ -540,21 +796,24 @@ final class SelectionOverlayView: NSView {
             commitTextInput()
         }
 
-        // 颜色面板（工具激活时弹出在工具栏上方）
-        if let frame = paletteFrame(), frame.insetBy(dx: -6, dy: -6).contains(point) {
-            for (index, color) in AnnotationColor.allCases.enumerated() {
-                if let dot = paletteDotRect(at: index), dot.insetBy(dx: -2, dy: -2).contains(point) {
-                    currentColor = color
-                    needsDisplay = true
-                    return
-                }
+        // 弹层优先；点面板外顺手收起
+        if let frame = panelFrame(), frame.insetBy(dx: -4, dy: -4).contains(point) {
+            if let index = panelItemIndex(at: point) {
+                selectPanelItem(index)
             }
             return
         }
+        if openPanel != nil {
+            openPanel = nil
+            needsDisplay = true
+        }
 
-        // 底栏优先
+        // 底栏优先；工具栏容器（含 padding 与 gap）一并吞掉，避免穿透到选区内部误确认
         if let action = barAction(at: point) {
             perform(action)
+            return
+        }
+        if completedRect != nil, barFrame().insetBy(dx: -6, dy: -6).contains(point) {
             return
         }
 
@@ -645,8 +904,11 @@ final class SelectionOverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        // 工具栏出现或位置变化后，光标区域需要重新登记
-        defer { window?.invalidateCursorRects(for: self) }
+        // 工具栏出现或位置变化后，光标与悬停提示需要重新登记
+        defer {
+            window?.invalidateCursorRects(for: self)
+            refreshToolTips()
+        }
         let point = convert(event.locationInWindow, from: nil)
 
         // 手柄调整结束
@@ -724,12 +986,25 @@ final class SelectionOverlayView: NSView {
     // MARK: - 动作
 
     private func perform(_ action: BarAction) {
+        // 面板开关会改变可点区域，光标登记需要同步
+        defer {
+            window?.invalidateCursorRects(for: self)
+            hoveredPanelIndex = nil
+        }
+
         switch action {
+        case .shapes:
+            openPanel = (openPanel == .shapes) ? nil : .shapes
+            needsDisplay = true
         case .tool(let kind):
-            activeTool = (activeTool == kind) ? nil : kind
-            NSLog("iCut: 标注工具 = \(activeTool?.displayName ?? "无")")
+            activate(kind)
+            openPanel = nil
+            needsDisplay = true
+        case .colors:
+            openPanel = (openPanel == .colors) ? nil : .colors
             needsDisplay = true
         case .undo:
+            guard !annotations.isEmpty else { return }
             undo()
         case .save:
             if let selection = completedRect ?? (state.isUsable ? state.rect : nil) {
@@ -746,6 +1021,33 @@ final class SelectionOverlayView: NSView {
                 onConfirm?(selection, annotations)
             }
         }
+    }
+
+    /// 切换标注工具；形状类工具关闭后，形状按钮仍回显它
+    private func activate(_ kind: Annotation.Kind) {
+        activeTool = (activeTool == kind) ? nil : kind
+        if Self.shapeTools.contains(kind) {
+            lastShape = kind
+        }
+        NSLog("iCut: 标注工具 = \(activeTool?.displayName ?? "无")")
+    }
+
+    /// 弹层点击：形状面板选工具，颜色面板选色
+    private func selectPanelItem(_ index: Int) {
+        switch openPanel {
+        case .shapes:
+            guard Self.shapeTools.indices.contains(index) else { return }
+            activate(Self.shapeTools[index])
+        case .colors:
+            guard AnnotationColor.allCases.indices.contains(index) else { return }
+            currentColor = AnnotationColor.allCases[index]
+        case nil:
+            return
+        }
+        openPanel = nil
+        hoveredPanelIndex = nil
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
     }
 
     private func undo() {
@@ -788,15 +1090,19 @@ final class SelectionOverlayView: NSView {
 
         // 有选区时，字母键切换标注工具
         if completedRect != nil || state.isUsable, let tool = tool(for: keyCode) {
-            activeTool = (activeTool == tool) ? nil : tool
+            activate(tool)
+            openPanel = nil
             needsDisplay = true
             return
         }
 
         switch keyCode {
         case kVK_Escape:
-            // 先退出工具，再退出截图
-            if activeTool != nil {
+            // 先收面板，再退工具，最后才退出截图
+            if openPanel != nil {
+                openPanel = nil
+                needsDisplay = true
+            } else if activeTool != nil {
                 activeTool = nil
                 needsDisplay = true
             } else {

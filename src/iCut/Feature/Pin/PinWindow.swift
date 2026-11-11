@@ -51,6 +51,9 @@ final class PinContentView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    // 非 key 窗口的第一击默认只用于激活窗口，会让用户觉得「第一次点不动贴图」
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     private static let minimumSide: CGFloat = 40
     private static let minimumAlpha: CGFloat = 0.2
 
