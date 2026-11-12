@@ -113,6 +113,14 @@ final class ClipboardStore {
         }
     }
 
+    /// 打开面板前调用：过期条目在展示前清掉，列表里不会出现「已过期」。
+    func pruneNow(now: Date = Date()) {
+        queue.sync {
+            pruneLocked(now: now)
+            scheduleSaveLocked()
+        }
+    }
+
     /// 退出前强制落盘：防抖窗口里的最后一次变更不能丢。
     func saveNow() {
         queue.sync {
@@ -205,6 +213,20 @@ final class ClipboardStore {
             saveWorkItem?.cancel()
             saveWorkItem = nil
             persistLocked()
+        }
+    }
+
+    /// 只清未永久保留的记录；收藏条目原样保留，图片密文同步删除。
+    @discardableResult
+    func clearUnpinned() -> Int {
+        queue.sync {
+            let ids = Set(items.filter { !$0.isPinned }.map(\.id))
+            guard !ids.isEmpty else { return 0 }
+            removeItemsLocked(ids: ids)
+            saveWorkItem?.cancel()
+            saveWorkItem = nil
+            persistLocked()
+            return ids.count
         }
     }
 

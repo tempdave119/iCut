@@ -43,6 +43,7 @@ runStickyHeaderStitchingTests()
 runScrollbarStitchingTests()
 runClipboardCryptoTests()
 runClipboardSettingsTests()
+runClipboardExpiryTests()
 runPasteboardSnapshotTests()
 runClipboardStoreTests()
 

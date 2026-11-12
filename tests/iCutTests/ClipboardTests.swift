@@ -97,6 +97,47 @@ func runPasteboardSnapshotTests() {
     try? FileManager.default.removeItem(at: tempDir)
 }
 
+func runClipboardExpiryTests() {
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let created = now.addingTimeInterval(-86_400)
+
+    expectEqual(
+        ClipboardExpiry.text(createdAt: created, isPinned: false, retention: 7 * 86_400, now: now),
+        "6 天后过期",
+        "7 天保留期应剩 6 天"
+    )
+    expectEqual(
+        ClipboardExpiry.text(createdAt: created, isPinned: true, retention: 7 * 86_400, now: now),
+        "永久保留",
+        "收藏条目不显示过期"
+    )
+    expectEqual(
+        ClipboardExpiry.text(createdAt: created, isPinned: false, retention: nil, now: now),
+        "不过期",
+        "永久保留期应显示不过期"
+    )
+    expectEqual(
+        ClipboardExpiry.text(
+            createdAt: now.addingTimeInterval(-10 * 86_400),
+            isPinned: false,
+            retention: 86_400,
+            now: now
+        ),
+        "已过期",
+        "超期应显示已过期"
+    )
+    expectEqual(
+        ClipboardExpiry.text(
+            createdAt: now.addingTimeInterval(-10 * 60),
+            isPinned: false,
+            retention: 86_400,
+            now: now
+        ),
+        "23 小时后过期",
+        "不足一天按小时显示"
+    )
+}
+
 func runClipboardStoreTests() {
     let key = ClipboardCrypto.randomKey()
     let root = FileManager.default.temporaryDirectory
@@ -198,6 +239,29 @@ func runClipboardStoreTests() {
         store.clearAll()
         store.append(makeTextSnapshot("capture-mark")!, now: Date(), isFromCapture: true)
         expectEqual(store.allItems().first?.isFromCapture, true, "截图来源应被标记")
+    }
+
+    // 打开面板前的即时清理：过期条目不应出现在列表里
+    if let store = makeStore() {
+        store.clearAll()
+        store.configure(retention: 7 * 86_400, maxEntries: 200, imageBudgetBytes: 200 * 1024 * 1024)
+        store.append(makeTextSnapshot("stale")!, now: Date().addingTimeInterval(-10 * 86_400))
+        store.pruneNow()
+        expectEqual(store.count, 0, "pruneNow 应清掉过期条目")
+    }
+
+    // 只清未收藏：收藏保留
+    if let store = makeStore() {
+        store.clearAll()
+        store.append(makeTextSnapshot("keep")!, now: Date())
+        store.append(makeTextSnapshot("remove")!, now: Date())
+        if let keep = store.allItems().first(where: { $0.text == "keep" }) {
+            store.setPinned(id: keep.id, pinned: true)
+        }
+        let removed = store.clearUnpinned()
+        expectEqual(removed, 1, "只应清除未收藏的 1 条")
+        expectEqual(store.count, 1, "收藏记录应保留")
+        expectEqual(store.allItems().first?.text, "keep", "保留的是收藏条目")
     }
 
     // 图片预算：收藏占满时新图片跳过，收藏本身保留

@@ -8,6 +8,7 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
     var onDelete: ((ClipboardStore.ClipItem) -> Void)?
     var onTogglePin: ((ClipboardStore.ClipItem) -> Void)?
     var onClearAll: (() -> Void)?
+    var onClearUnpinned: (() -> Void)?
     var onPin: ((ClipboardStore.ClipItem) -> Void)?
     var onOCR: ((ClipboardStore.ClipItem) -> Void)?
     var onSave: ((ClipboardStore.ClipItem) -> Void)?
@@ -18,6 +19,8 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
     /// Esc 必须无论焦点在搜索框还是表格都能关闭；局部监视器比 responder 链可靠。
     private var escapeMonitor: Any?
     private var didInitialLayout = false
+    /// 弹系统确认框时面板会失焦，不能因此自动收起。
+    private var isAlertPresented = false
 
     init() {
         super.init(
@@ -46,6 +49,7 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
         panelView.onDelete = { [weak self] item in self?.onDelete?(item) }
         panelView.onTogglePin = { [weak self] item in self?.onTogglePin?(item) }
         panelView.onClearAll = { [weak self] in self?.onClearAll?() }
+        panelView.onClearUnpinned = { [weak self] in self?.onClearUnpinned?() }
         panelView.onHide = { [weak self] in self?.hidePanel() }
         panelView.onPin = { [weak self] item in self?.onPin?(item) }
         panelView.onOCR = { [weak self] item in self?.onOCR?(item) }
@@ -58,12 +62,16 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    func present(items: [ClipboardStore.ClipItem], storageFull: Bool) {
-        panelView.apply(items: items, storageFull: storageFull)
+    func present(items: [ClipboardStore.ClipItem], storageFull: Bool, retention: TimeInterval?) {
+        panelView.apply(items: items, storageFull: storageFull, retention: retention)
     }
 
     func syncKeepOpen(_ enabled: Bool) {
         panelView.syncKeepOpen(enabled)
+    }
+
+    func setAlertPresented(_ presented: Bool) {
+        isAlertPresented = presented
     }
 
     func showPanel() {
@@ -90,7 +98,7 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // 弹右键菜单时 key window 仍是面板；真正切走才收起，避免菜单一弹就消失
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isVisible, !self.isKeyWindow else { return }
+            guard let self, self.isVisible, !self.isAlertPresented, !self.isKeyWindow else { return }
             self.hidePanel()
         }
     }
@@ -134,6 +142,7 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
     var onDelete: ((ClipboardStore.ClipItem) -> Void)?
     var onTogglePin: ((ClipboardStore.ClipItem) -> Void)?
     var onClearAll: (() -> Void)?
+    var onClearUnpinned: (() -> Void)?
     var onPin: ((ClipboardStore.ClipItem) -> Void)?
     var onOCR: ((ClipboardStore.ClipItem) -> Void)?
     var onSave: ((ClipboardStore.ClipItem) -> Void)?
@@ -151,10 +160,12 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
     private let keepOpenSwitch = NSButton(checkboxWithTitle: "保持打开", target: nil, action: nil)
     private let bottomBar = NSView()
     private let separator = NSView()
+    private let clearUnpinnedButton = NSButton(title: "清除", target: nil, action: nil)
 
     private var items: [ClipboardStore.ClipItem] = []
     private var filtered: [ClipboardStore.ClipItem] = []
     private var storageFull = false
+    private var retention: TimeInterval?
     private var statusWorkItem: DispatchWorkItem?
 
     override init(frame frameRect: NSRect) {
@@ -168,9 +179,10 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
 
     // MARK: - 对外
 
-    func apply(items: [ClipboardStore.ClipItem], storageFull: Bool) {
+    func apply(items: [ClipboardStore.ClipItem], storageFull: Bool, retention: TimeInterval?) {
         self.items = items
         self.storageFull = storageFull
+        self.retention = retention
         bannerLabel.stringValue = storageFull ? "存储预算已被收藏占满，新内容暂不记录" : ""
         bannerLabel.isHidden = !storageFull
         reloadFiltered(selectFirst: true)
@@ -235,6 +247,14 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
         keepOpenSwitch.font = .systemFont(ofSize: 11)
         keepOpenSwitch.translatesAutoresizingMaskIntoConstraints = false
 
+        clearUnpinnedButton.bezelStyle = .rounded
+        clearUnpinnedButton.controlSize = .small
+        clearUnpinnedButton.font = .systemFont(ofSize: 11)
+        clearUnpinnedButton.target = self
+        clearUnpinnedButton.action = #selector(clearUnpinnedClicked)
+        clearUnpinnedButton.toolTip = "清除所有未永久保留的记录"
+        clearUnpinnedButton.translatesAutoresizingMaskIntoConstraints = false
+
         // 底部栏单独着色：与列表明确分界，控件不会看起来压在内容上
         bottomBar.wantsLayer = true
         bottomBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -251,6 +271,7 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
         bottomBar.addSubview(separator)
         bottomBar.addSubview(keepOpenSwitch)
         bottomBar.addSubview(hintLabel)
+        bottomBar.addSubview(clearUnpinnedButton)
 
         NSLayoutConstraint.activate([
             searchField.topAnchor.constraint(equalTo: topAnchor, constant: 14),
@@ -283,8 +304,11 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
             keepOpenSwitch.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 16),
             keepOpenSwitch.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
 
+            clearUnpinnedButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -16),
+            clearUnpinnedButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
+
             hintLabel.leadingAnchor.constraint(equalTo: keepOpenSwitch.trailingAnchor, constant: 10),
-            hintLabel.trailingAnchor.constraint(lessThanOrEqualTo: bottomBar.trailingAnchor, constant: -16),
+            hintLabel.trailingAnchor.constraint(lessThanOrEqualTo: clearUnpinnedButton.leadingAnchor, constant: -10),
             hintLabel.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor)
         ])
     }
@@ -336,7 +360,7 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
             ?? ClipItemRowView(identifier: identifier)
         let item = filtered[row]
         // 行内按钮固定「复制但不关闭」，便于连续复制多条
-        view.configure(with: item, query: searchField.stringValue) { [weak self] in
+        view.configure(with: item, query: searchField.stringValue, retention: retention) { [weak self] in
             self?.copy(item, keepOpen: true)
         }
         return view
@@ -409,6 +433,10 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
 
     @objc private func keepOpenToggled() {
         onKeepOpenChanged?(keepOpenSwitch.state == .on)
+    }
+
+    @objc private func clearUnpinnedClicked() {
+        onClearUnpinned?()
     }
 
     private func showStatus(_ text: String) {
@@ -567,7 +595,12 @@ final class ClipItemRowView: NSTableCellView {
         ])
     }
 
-    func configure(with item: ClipboardStore.ClipItem, query: String, onCopy: @escaping () -> Void) {
+    func configure(
+        with item: ClipboardStore.ClipItem,
+        query: String,
+        retention: TimeInterval?,
+        onCopy: @escaping () -> Void
+    ) {
         self.onCopy = onCopy
         pinView.isHidden = !item.isPinned
 
@@ -601,6 +634,11 @@ final class ClipItemRowView: NSTableCellView {
            paths.contains(where: { !FileManager.default.fileExists(atPath: $0) }) {
             parts.append("文件已不存在")
         }
+        parts.append(ClipboardExpiry.text(
+            createdAt: item.createdAt,
+            isPinned: item.isPinned,
+            retention: retention
+        ))
         detailLabel.stringValue = parts.joined(separator: " · ")
     }
 

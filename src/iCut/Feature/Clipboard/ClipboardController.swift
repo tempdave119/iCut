@@ -29,6 +29,7 @@ final class ClipboardController {
         panel.onDelete = { [weak self] item in self?.delete(item) }
         panel.onTogglePin = { [weak self] item in self?.togglePin(item) }
         panel.onClearAll = { [weak self] in self?.confirmClearAll() }
+        panel.onClearUnpinned = { [weak self] in self?.confirmClearUnpinned() }
         panel.onPin = { [weak self] item in self?.pin(item) }
         panel.onOCR = { [weak self] item in self?.recognize(item) }
         panel.onSave = { [weak self] item in self?.save(item) }
@@ -71,7 +72,13 @@ final class ClipboardController {
             return
         }
         panel.syncKeepOpen(settings.keepPanelOpen)
-        panel.present(items: store.allItems(), storageFull: store.isStorageFull)
+        // 过期条目在展示前先清掉，避免列表里还挂着「已过期」
+        store.pruneNow()
+        panel.present(
+            items: store.allItems(),
+            storageFull: store.isStorageFull,
+            retention: settings.retentionInterval
+        )
         panel.showPanel()
     }
 
@@ -198,11 +205,21 @@ final class ClipboardController {
 
     private func refreshPanel() {
         guard panel.isVisible, let store else { return }
-        panel.present(items: store.allItems(), storageFull: store.isStorageFull)
+        panel.present(
+            items: store.allItems(),
+            storageFull: store.isStorageFull,
+            retention: settings.retentionInterval
+        )
     }
 
     private func confirmClearAll() {
         guard let store else { return }
+        let wasVisible = panel.isVisible
+        panel.setAlertPresented(true)
+        defer {
+            panel.setAlertPresented(false)
+            if wasVisible { panel.showPanel() }
+        }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "清空剪贴板记录？"
@@ -215,6 +232,28 @@ final class ClipboardController {
         store.clearAll()
         refreshPanel()
         NSLog("iCut: 剪贴板历史已清空 \(removed) 条")
+    }
+
+    /// 面板底部「清除」：只删未永久保留的记录，收藏原样保留。
+    private func confirmClearUnpinned() {
+        guard let store else { return }
+        let wasVisible = panel.isVisible
+        panel.setAlertPresented(true)
+        defer {
+            panel.setAlertPresented(false)
+            if wasVisible { panel.showPanel() }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "清除未永久保留的记录？"
+        alert.informativeText = "未永久保留的文本、图片与文件记录将被删除，标记为永久保留的记录不会动。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "清除")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let removed = store.clearUnpinned()
+        refreshPanel()
+        NSLog("iCut: 剪贴板已清除未收藏记录 \(removed) 条")
     }
 
     private func notifyStorageFull() {
