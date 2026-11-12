@@ -160,6 +160,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 message: "无法读取钥匙串中的主密钥，记录已暂停（不会降级为明文）。请退出并重新打开 iCut 重试；若仍失败，检查系统是否允许 iCut 访问钥匙串。"
             )
         }
+        clipboardController.onPinImage = { [weak self] image, scale, origin in
+            self?.pinController.pin(image: image, scale: scale, origin: origin)
+        }
+        clipboardController.onOCRImage = { [weak self] image in
+            self?.recognizeText(in: image)
+        }
+        clipboardController.onSaveImage = { image, scale in
+            _ = ImageSaver.savePNG(image: image, scale: scale, defaultName: ImageSaver.defaultFileName())
+        }
         clipboardController.startIfEnabled()
         registerClipboardHotKey()
     }
@@ -355,6 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     image: selection.image,
                     scale: selection.frame.backingScaleFactor
                 )
+                if copied { self.clipboardController.noteCaptureCopy() }
                 NSLog(
                     "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"
                 )
@@ -413,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             let copied = ClipboardService.copy(image: output.image, scale: output.scale)
+            if copied { self.clipboardController.noteCaptureCopy() }
             let savedURL = AutoSaver.saveIfEnabled(image: output.image, scale: output.scale)
             NSLog(
                 "iCut: 长截图 \(output.image.width)x\(output.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"

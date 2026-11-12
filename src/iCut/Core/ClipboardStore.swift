@@ -24,6 +24,9 @@ final class ClipboardStore {
         var hash: Data
         var byteCount: Int
         var isTruncated: Bool
+        /// P1 起记录：图片点尺寸比例与是否来自 iCut 截图；旧索引没有这两个字段。
+        var imageScale: Double?
+        var isFromCapture: Bool?
     }
 
     private struct IndexEnvelope: Codable {
@@ -149,12 +152,13 @@ final class ClipboardStore {
         }
     }
 
-    func append(_ snapshot: PasteboardSnapshot, now: Date = Date()) {
+    func append(_ snapshot: PasteboardSnapshot, now: Date = Date(), isFromCapture: Bool = false) {
         queue.sync {
             // 同内容 5 分钟内重复：只提前到顶部并刷新时间，不新增
             if let index = items.firstIndex(where: { $0.hash == snapshot.hash }),
                now.timeIntervalSince(items[index].createdAt) < 300 {
                 items[index].createdAt = now
+                if isFromCapture { items[index].isFromCapture = true }
                 let updated = items.remove(at: index)
                 items.insert(updated, at: 0)
                 scheduleSaveLocked()
@@ -172,7 +176,7 @@ final class ClipboardStore {
                 }
             }
 
-            let item = makeItemLocked(from: snapshot, now: now)
+            let item = makeItemLocked(from: snapshot, now: now, isFromCapture: isFromCapture)
             items.insert(item, at: 0)
             pruneLocked(now: now)
             scheduleSaveLocked()
@@ -219,7 +223,8 @@ final class ClipboardStore {
                 ok = pasteboard.setString(text, forType: .string)
 
             case .image:
-                guard let data = imageDataLocked(item), let image = NSImage(data: data) else {
+                guard let data = imageDataLocked(item),
+                      let image = sizedImage(data: data, scale: item.imageScale) else {
                     return false
                 }
                 pasteboard.clearContents()
@@ -242,7 +247,7 @@ final class ClipboardStore {
 
     // MARK: - 加密落盘
 
-    private func makeItemLocked(from snapshot: PasteboardSnapshot, now: Date) -> ClipItem {
+    private func makeItemLocked(from snapshot: PasteboardSnapshot, now: Date, isFromCapture: Bool) -> ClipItem {
         var imageFile: String?
         if let png = snapshot.imagePNG, let sealed = ClipboardCrypto.seal(png, using: key) {
             let name = "\(UUID().uuidString).png.enc"
@@ -268,7 +273,9 @@ final class ClipboardStore {
             isPinned: false,
             hash: snapshot.hash,
             byteCount: snapshot.byteCount,
-            isTruncated: snapshot.isTruncated
+            isTruncated: snapshot.isTruncated,
+            imageScale: snapshot.kind == .image ? Double(snapshot.imageScale) : nil,
+            isFromCapture: isFromCapture ? true : nil
         )
     }
 
@@ -376,5 +383,20 @@ final class ClipboardStore {
 
     private func totalImageBytesLocked() -> Int {
         items.filter { $0.kind == .image }.reduce(0) { $0 + $1.byteCount }
+    }
+
+    /// PNG 只存像素；不还原点尺寸就会被当成 1x 图，粘贴到文档里尺寸翻倍。
+    private func sizedImage(data: Data, scale: Double?) -> NSImage? {
+        guard let rep = NSBitmapImageRep(data: data) else {
+            return NSImage(data: data)
+        }
+        let factor = max(CGFloat(scale ?? 1), 0.1)
+        rep.size = NSSize(
+            width: CGFloat(rep.pixelsWide) / factor,
+            height: CGFloat(rep.pixelsHigh) / factor
+        )
+        let image = NSImage()
+        image.addRepresentation(rep)
+        return image
     }
 }

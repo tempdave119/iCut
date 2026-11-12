@@ -8,6 +8,9 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
     var onDelete: ((ClipboardStore.ClipItem) -> Void)?
     var onTogglePin: ((ClipboardStore.ClipItem) -> Void)?
     var onClearAll: (() -> Void)?
+    var onPin: ((ClipboardStore.ClipItem) -> Void)?
+    var onOCR: ((ClipboardStore.ClipItem) -> Void)?
+    var onSave: ((ClipboardStore.ClipItem) -> Void)?
     var onHide: (() -> Void)?
     var onKeepOpenChanged: ((Bool) -> Void)?
 
@@ -44,6 +47,9 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
         panelView.onTogglePin = { [weak self] item in self?.onTogglePin?(item) }
         panelView.onClearAll = { [weak self] in self?.onClearAll?() }
         panelView.onHide = { [weak self] in self?.hidePanel() }
+        panelView.onPin = { [weak self] item in self?.onPin?(item) }
+        panelView.onOCR = { [weak self] item in self?.onOCR?(item) }
+        panelView.onSave = { [weak self] item in self?.onSave?(item) }
         panelView.onKeepOpenChanged = { [weak self] enabled in
             self?.onKeepOpenChanged?(enabled)
         }
@@ -128,6 +134,9 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
     var onDelete: ((ClipboardStore.ClipItem) -> Void)?
     var onTogglePin: ((ClipboardStore.ClipItem) -> Void)?
     var onClearAll: (() -> Void)?
+    var onPin: ((ClipboardStore.ClipItem) -> Void)?
+    var onOCR: ((ClipboardStore.ClipItem) -> Void)?
+    var onSave: ((ClipboardStore.ClipItem) -> Void)?
     var onHide: (() -> Void)?
     var onKeepOpenChanged: ((Bool) -> Void)?
 
@@ -327,7 +336,7 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
             ?? ClipItemRowView(identifier: identifier)
         let item = filtered[row]
         // 行内按钮固定「复制但不关闭」，便于连续复制多条
-        view.configure(with: item) { [weak self] in
+        view.configure(with: item, query: searchField.stringValue) { [weak self] in
             self?.copy(item, keepOpen: true)
         }
         return view
@@ -423,6 +432,12 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
         let item = filtered[row]
         let menu = NSMenu()
         menu.addItem(menuItem(title: "复制", action: #selector(copyCurrent(_:))))
+        if item.kind == .image {
+            menu.addItem(menuItem(title: "贴图", action: #selector(pinCurrent)))
+            menu.addItem(menuItem(title: "识别文字", action: #selector(ocrCurrent)))
+            menu.addItem(menuItem(title: "保存 PNG…", action: #selector(saveCurrent)))
+        }
+        menu.addItem(.separator())
         let pinTitle = item.isPinned ? "取消永久保留" : "永久保留"
         menu.addItem(menuItem(title: pinTitle, action: #selector(togglePinCurrent)))
         menu.addItem(.separator())
@@ -440,6 +455,21 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
     @objc private func togglePinCurrent() {
         guard let item = selectedItem else { return }
         onTogglePin?(item)
+    }
+
+    @objc private func pinCurrent() {
+        guard let item = selectedItem else { return }
+        onPin?(item)
+    }
+
+    @objc private func ocrCurrent() {
+        guard let item = selectedItem else { return }
+        onOCR?(item)
+    }
+
+    @objc private func saveCurrent() {
+        guard let item = selectedItem else { return }
+        onSave?(item)
     }
 
     @objc private func deleteCurrent() {
@@ -537,7 +567,7 @@ final class ClipItemRowView: NSTableCellView {
         ])
     }
 
-    func configure(with item: ClipboardStore.ClipItem, onCopy: @escaping () -> Void) {
+    func configure(with item: ClipboardStore.ClipItem, query: String, onCopy: @escaping () -> Void) {
         self.onCopy = onCopy
         pinView.isHidden = !item.isPinned
 
@@ -545,7 +575,7 @@ final class ClipItemRowView: NSTableCellView {
         case .text:
             iconView.image = NSImage(systemSymbolName: "text.alignleft", accessibilityDescription: "文本")
             iconView.contentTintColor = .secondaryLabelColor
-            titleLabel.stringValue = Self.summary(for: item.text)
+            titleLabel.attributedStringValue = Self.highlighted(Self.summary(for: item.text), query: query)
         case .image:
             if let data = item.thumbnailPNG, let image = NSImage(data: data) {
                 iconView.image = image
@@ -558,16 +588,47 @@ final class ClipItemRowView: NSTableCellView {
         case .fileURLs:
             iconView.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "文件")
             iconView.contentTintColor = .secondaryLabelColor
-            titleLabel.stringValue = Self.fileSummary(for: item.filePaths ?? [])
+            titleLabel.attributedStringValue = Self.highlighted(
+                Self.fileSummary(for: item.filePaths ?? []),
+                query: query
+            )
         }
 
         var parts = [Self.relativeFormatter.localizedString(for: item.createdAt, relativeTo: Date())]
+        if item.isFromCapture == true { parts.append("iCut 截图") }
         if item.isTruncated { parts.append("已截断") }
         if item.kind == .fileURLs, let paths = item.filePaths,
            paths.contains(where: { !FileManager.default.fileExists(atPath: $0) }) {
             parts.append("文件已不存在")
         }
         detailLabel.stringValue = parts.joined(separator: " · ")
+    }
+
+    /// 搜索词在标题里高亮，长文本在摘要截断范围内命中时也能看到位置。
+    private static func highlighted(_ text: String, query: String) -> NSAttributedString {
+        let attributed = NSMutableAttributedString(
+            string: text,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 13),
+                .foregroundColor: NSColor.labelColor
+            ]
+        )
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return attributed }
+
+        let lowerText = text.lowercased()
+        let lowerNeedle = needle.lowercased()
+        var searchStart = lowerText.startIndex
+        while searchStart < lowerText.endIndex,
+              let range = lowerText.range(of: lowerNeedle, range: searchStart..<lowerText.endIndex) {
+            attributed.addAttribute(
+                .backgroundColor,
+                value: NSColor.systemYellow.withAlphaComponent(0.35),
+                range: NSRange(range, in: text)
+            )
+            searchStart = range.upperBound
+        }
+        return attributed
     }
 
     @objc private func copyClicked() {

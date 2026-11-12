@@ -77,6 +77,7 @@ func runPasteboardSnapshotTests() {
     let imageSnapshot = PasteboardSnapshot.parse(pasteboard, recordImages: true)
     expectEqual(imageSnapshot?.kind, PasteboardSnapshot.Kind.image, "识别图片")
     expect(imageSnapshot?.thumbnailPNG != nil, "图片应生成缩略图")
+    expectEqual(imageSnapshot?.imageScale, CGFloat(1), "无点尺寸信息时按 1x 处理")
     expect(
         PasteboardSnapshot.parse(pasteboard, recordImages: false) == nil,
         "关闭图片记录时不解析图片"
@@ -190,6 +191,13 @@ func runClipboardStoreTests() {
         } else {
             expect(false, "回填测试缺少条目")
         }
+    }
+
+    // 截图来源标记
+    if let store = makeStore() {
+        store.clearAll()
+        store.append(makeTextSnapshot("capture-mark")!, now: Date(), isFromCapture: true)
+        expectEqual(store.allItems().first?.isFromCapture, true, "截图来源应被标记")
     }
 
     // 图片预算：收藏占满时新图片跳过，收藏本身保留

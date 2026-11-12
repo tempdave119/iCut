@@ -6,12 +6,19 @@ final class ClipboardController {
     /// 钥匙串不可用时通知外部（弹一次说明），记录保持暂停，不降级为明文。
     var onEncryptionUnavailable: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// 图片条目的跨模块联动：贴图 / 识别文字 / 保存，由 AppDelegate 注入。
+    var onPinImage: ((CGImage, CGFloat, CGPoint) -> Void)?
+    var onOCRImage: ((CGImage) -> Void)?
+    var onSaveImage: ((CGImage, CGFloat) -> Void)?
 
     private var settings: ClipboardSettings
     private var store: ClipboardStore?
     private let watcher = PasteboardWatcher()
     private let panel = ClipboardPanel()
     private var storageFullNotified = false
+    /// 截图写入剪贴板后置位，下一次采集把该条目标记为截图。
+    private let captureMarkLock = NSLock()
+    private var pendingCaptureMark = false
 
     init() {
         settings = ClipboardSettings.load()
@@ -22,6 +29,9 @@ final class ClipboardController {
         panel.onDelete = { [weak self] item in self?.delete(item) }
         panel.onTogglePin = { [weak self] item in self?.togglePin(item) }
         panel.onClearAll = { [weak self] in self?.confirmClearAll() }
+        panel.onPin = { [weak self] item in self?.pin(item) }
+        panel.onOCR = { [weak self] item in self?.recognize(item) }
+        panel.onSave = { [weak self] item in self?.save(item) }
         panel.onKeepOpenChanged = { [weak self] enabled in
             guard let self else { return }
             self.settings.keepPanelOpen = enabled
@@ -103,7 +113,9 @@ final class ClipboardController {
             imageBudgetBytes: settings.imageBudgetBytes
         )
         watcher.start(recordImages: settings.recordImages) { [weak self] snapshot in
-            self?.store?.append(snapshot)
+            guard let self else { return }
+            let isCapture = self.consumeCaptureMark()
+            self.store?.append(snapshot, isFromCapture: isCapture)
         }
         NSLog("iCut: 剪贴板历史已启动（图片=\(settings.recordImages ? "记录" : "关闭")）")
     }
@@ -140,6 +152,48 @@ final class ClipboardController {
     private func togglePin(_ item: ClipboardStore.ClipItem) {
         store?.setPinned(id: item.id, pinned: !item.isPinned)
         refreshPanel()
+    }
+
+    /// 截图确认与长截图完成后调用：标记下一次采集为截图来源。
+    func noteCaptureCopy() {
+        captureMarkLock.lock()
+        pendingCaptureMark = true
+        captureMarkLock.unlock()
+    }
+
+    private func consumeCaptureMark() -> Bool {
+        captureMarkLock.lock()
+        defer { captureMarkLock.unlock() }
+        let value = pendingCaptureMark
+        pendingCaptureMark = false
+        return value
+    }
+
+    private func pin(_ item: ClipboardStore.ClipItem) {
+        guard let payload = imagePayload(item) else { return }
+        onPinImage?(payload.image, payload.scale, NSEvent.mouseLocation)
+    }
+
+    private func recognize(_ item: ClipboardStore.ClipItem) {
+        guard let payload = imagePayload(item) else { return }
+        onOCRImage?(payload.image)
+    }
+
+    private func save(_ item: ClipboardStore.ClipItem) {
+        guard let payload = imagePayload(item) else { return }
+        onSaveImage?(payload.image, payload.scale)
+    }
+
+    private func imagePayload(_ item: ClipboardStore.ClipItem) -> (image: CGImage, scale: CGFloat)? {
+        guard item.kind == .image,
+              let store,
+              let data = store.imageData(for: item),
+              let image = NSImage(data: data) else { return nil }
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            return nil
+        }
+        return (cgImage, CGFloat(item.imageScale ?? 1))
     }
 
     private func refreshPanel() {

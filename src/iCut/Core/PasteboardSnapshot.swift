@@ -16,6 +16,8 @@ struct PasteboardSnapshot: Equatable {
     let rtfData: Data?
     let imagePNG: Data?
     let thumbnailPNG: Data?
+    /// 原图的点尺寸比例（像素 / 点）；截图写入的图片带 scale，粘贴时才不会放大。
+    let imageScale: CGFloat
     let filePaths: [String]
     let hash: Data
     let byteCount: Int
@@ -64,6 +66,7 @@ struct PasteboardSnapshot: Equatable {
             rtfData: nil,
             imagePNG: nil,
             thumbnailPNG: nil,
+            imageScale: 1,
             filePaths: paths,
             hash: sha256(Data(joined.utf8)),
             byteCount: joined.utf8.count,
@@ -72,8 +75,9 @@ struct PasteboardSnapshot: Equatable {
     }
 
     private static func readImage(_ pasteboard: NSPasteboard) -> PasteboardSnapshot? {
+        let tiff = pasteboard.data(forType: .tiff)
         var png = pasteboard.data(forType: .png)
-        if png == nil, let tiff = pasteboard.data(forType: .tiff) {
+        if png == nil, let tiff {
             png = pngData(fromTIFF: tiff)
         }
         guard let imagePNG = png, imagePNG.count <= maxImageBytes else { return nil }
@@ -84,11 +88,24 @@ struct PasteboardSnapshot: Equatable {
             rtfData: nil,
             imagePNG: imagePNG,
             thumbnailPNG: thumbnail(from: imagePNG),
+            imageScale: imageScale(tiff: tiff, png: imagePNG),
             filePaths: [],
             hash: sha256(imagePNG),
             byteCount: imagePNG.count,
             isTruncated: false
         )
+    }
+
+    /// TIFF 保留了点尺寸，优先用它推 scale；只有 PNG 时退化为按像素处理。
+    private static func imageScale(tiff: Data?, png: Data) -> CGFloat {
+        for data in [tiff, png].compactMap({ $0 }) {
+            guard let rep = NSBitmapImageRep(data: data),
+                  rep.pixelsWide > 0,
+                  rep.size.width > 0 else { continue }
+            let scale = CGFloat(rep.pixelsWide) / rep.size.width
+            if scale > 0 { return scale }
+        }
+        return 1
     }
 
     private static func readText(_ pasteboard: NSPasteboard) -> PasteboardSnapshot? {
@@ -106,6 +123,7 @@ struct PasteboardSnapshot: Equatable {
             rtfData: rtf,
             imagePNG: nil,
             thumbnailPNG: nil,
+            imageScale: 1,
             filePaths: [],
             hash: sha256(Data(text.utf8)),
             byteCount: data.count,
