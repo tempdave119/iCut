@@ -114,7 +114,7 @@ final class ClipboardSettingsView: NSView {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
-        let document = NSView()
+        let document = FlippedDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = document
         document.addSubview(root)

@@ -1,5 +1,10 @@
 import AppKit
 
+/// 滚动区的文档视图必须翻转坐标系：未翻转时内容比可视区矮会贴底，比可视区高则初始停在底部
+final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 /// 统一设置窗口：截图与剪贴板历史分页，两套配置互不影响。
 final class SettingsWindow: NSWindow, NSWindowDelegate {
     private let captureView = SettingsContentView()
@@ -188,7 +193,7 @@ final class SettingsContentView: NSView, NSTextFieldDelegate {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
-        let document = NSView()
+        let document = FlippedDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = document
         document.addSubview(root)
