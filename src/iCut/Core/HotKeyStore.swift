@@ -12,30 +12,58 @@ struct HotKeyConfig: Equatable {
         carbonModifiers: UInt32(cmdKey | shiftKey),
         displayText: "⌘⇧2"
     )
+
+    /// 剪贴板历史面板的默认组合；避开 ⇧⌘V（多处应用的「粘贴并匹配样式」）。
+    static let clipboardDefault = HotKeyConfig(
+        keyCode: UInt32(kVK_ANSI_V),
+        carbonModifiers: UInt32(controlKey | optionKey),
+        displayText: "⌃⌥V"
+    )
+}
+
+/// 一个热键槽位：截图与剪贴板历史各占一个，互不影响。
+enum HotKeySlot {
+    case capture
+    case clipboard
+
+    /// capture 沿用旧键名，升级后不需要迁移。
+    var keyPrefix: String {
+        switch self {
+        case .capture: return "hotkey"
+        case .clipboard: return "hotkey.clipboard"
+        }
+    }
+
+    var fallback: HotKeyConfig {
+        switch self {
+        case .capture: return .default
+        case .clipboard: return .clipboardDefault
+        }
+    }
 }
 
 enum HotKeyStore {
-    private static let keyCodeKey = "hotkey.keyCode"
-    private static let modifiersKey = "hotkey.modifiers"
-    private static let displayKey = "hotkey.displayText"
-
-    static func load() -> HotKeyConfig {
+    static func load(_ slot: HotKeySlot = .capture) -> HotKeyConfig {
         let defaults = UserDefaults.standard
+        let keyCodeKey = "\(slot.keyPrefix).keyCode"
+        let modifiersKey = "\(slot.keyPrefix).modifiers"
+        let displayKey = "\(slot.keyPrefix).displayText"
+
         guard defaults.object(forKey: keyCodeKey) != nil,
               defaults.object(forKey: modifiersKey) != nil else {
-            return .default
+            return slot.fallback
         }
         let keyCode = UInt32(truncatingIfNeeded: defaults.integer(forKey: keyCodeKey))
         let modifiers = UInt32(truncatingIfNeeded: defaults.integer(forKey: modifiersKey))
-        let display = defaults.string(forKey: displayKey) ?? HotKeyConfig.default.displayText
+        let display = defaults.string(forKey: displayKey) ?? slot.fallback.displayText
         return HotKeyConfig(keyCode: keyCode, carbonModifiers: modifiers, displayText: display)
     }
 
-    static func save(_ config: HotKeyConfig) {
+    static func save(_ config: HotKeyConfig, for slot: HotKeySlot = .capture) {
         let defaults = UserDefaults.standard
-        defaults.set(Int(config.keyCode), forKey: keyCodeKey)
-        defaults.set(Int(config.carbonModifiers), forKey: modifiersKey)
-        defaults.set(config.displayText, forKey: displayKey)
+        defaults.set(Int(config.keyCode), forKey: "\(slot.keyPrefix).keyCode")
+        defaults.set(Int(config.carbonModifiers), forKey: "\(slot.keyPrefix).modifiers")
+        defaults.set(config.displayText, forKey: "\(slot.keyPrefix).displayText")
     }
 
     /// 把 AppKit 修饰键映射为 Carbon 修饰键；返回 0 表示没有任何修饰键，调用方据此拒绝注册。

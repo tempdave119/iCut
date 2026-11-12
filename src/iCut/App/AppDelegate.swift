@@ -3,13 +3,16 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var captureMenuItem: NSMenuItem?
+    private var clipboardMenuItem: NSMenuItem?
     private let hotKeyCenter = HotKeyCenter()
     private var shortcutWindow: ShortcutRecorderWindow?
+    private var clipboardShortcutWindow: ShortcutRecorderWindow?
     private var settingsWindow: SettingsWindow?
     private var ocrWindow: OCRResultWindow?
     private var activeConfig = HotKeyStore.load()
     private let selectionController = SelectionOverlayController()
     private let pinController = PinController()
+    private let clipboardController = ClipboardController()
     private var longCapture: LongCaptureController?
     /// 截图前的前台应用：长截图期间要把焦点还回去，否则页面可能滚不动
     private var appBeforeCapture: NSRunningApplication?
@@ -19,9 +22,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
         registerActiveHotKey()
+        setUpClipboardController()
         // 贴图右键的「识别文字」与截图工具栏共用同一个识别服务
         pinController.onRequestOCR = { [weak self] image in self?.recognizeText(in: image) }
         NSLog("iCut: 屏幕录制权限 = \(ScreenCapturePermission.isGranted)")
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // 防抖窗口里的最后一次剪贴板变更必须落盘
+        clipboardController.persistNow()
     }
 
     private func setUpStatusItem() {
@@ -41,6 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         captureItem.target = self
         menu.addItem(captureItem)
         captureMenuItem = captureItem
+
+        let clipboardItem = NSMenuItem(title: "", action: #selector(showClipboardHistory), keyEquivalent: "")
+        clipboardItem.target = self
+        menu.addItem(clipboardItem)
+        clipboardMenuItem = clipboardItem
 
         let shortcutItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: "")
         shortcutItem.target = self
@@ -64,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenuTitles() {
         captureMenuItem?.title = "截图（\(activeConfig.displayText)）"
+        clipboardMenuItem?.title = "剪贴板（\(HotKeyStore.load(.clipboard).displayText)）"
     }
 
     private func registerActiveHotKey() {
@@ -109,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         if let window = settingsWindow {
             window.refreshHotKey(activeConfig)
+            window.refreshClipboardSettings()
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return
@@ -116,9 +132,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = SettingsWindow()
         window.refreshHotKey(activeConfig)
+        window.refreshClipboardHotKey(HotKeyStore.load(.clipboard))
         window.onRequestHotKeyEdit = { [weak self] in self?.openShortcutSettings() }
+        window.onRequestClipboardHotKeyEdit = { [weak self] in self?.openClipboardShortcutSettings() }
+        window.onClipboardChanged = { [weak self] settings in
+            self?.clipboardController.apply(settings)
+            self?.updateMenuTitles()
+        }
+        window.onClearClipboard = { [weak self] in
+            self?.clipboardController.clearWithConfirmation()
+        }
         window.onClose = { [weak self] in self?.settingsWindow = nil }
         settingsWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func showClipboardHistory() {
+        clipboardController.show()
+    }
+
+    private func setUpClipboardController() {
+        clipboardController.onOpenSettings = { [weak self] in self?.openSettings() }
+        clipboardController.onEncryptionUnavailable = { [weak self] in
+            self?.presentAlert(
+                title: "剪贴板历史加密不可用",
+                message: "无法读取钥匙串中的主密钥，记录已暂停（不会降级为明文）。请退出并重新打开 iCut 重试；若仍失败，检查系统是否允许 iCut 访问钥匙串。"
+            )
+        }
+        clipboardController.startIfEnabled()
+        registerClipboardHotKey()
+    }
+
+    private func registerClipboardHotKey() {
+        let config = HotKeyStore.load(.clipboard)
+        let ok = hotKeyCenter.register(config, id: HotKeyCenter.clipboardID) { [weak self] in
+            self?.clipboardController.show()
+        }
+        if ok {
+            NSLog("iCut: 已注册剪贴板历史快捷键 \(config.displayText)")
+        } else {
+            NSLog("iCut: 剪贴板历史快捷键 \(config.displayText) 注册失败，仅保留菜单入口")
+        }
+    }
+
+    /// 剪贴板历史快捷键的录制入口：只注销该槽位，截图热键不受影响。
+    private func openClipboardShortcutSettings() {
+        if let window = clipboardShortcutWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        hotKeyCenter.unregister(id: HotKeyCenter.clipboardID)
+
+        let window = ShortcutRecorderWindow(current: HotKeyStore.load(.clipboard))
+        var accepted = false
+
+        window.onKeyDown = { [weak self, weak window] event in
+            guard let self, let window else { return }
+            let modifiers = HotKeyStore.carbonModifiers(from: event.modifierFlags)
+            guard modifiers != 0 else {
+                NSSound.beep()
+                window.showMessage("必须包含至少一个修饰键（⌘ ⌥ ⌃ ⇧）")
+                return
+            }
+
+            let config = HotKeyConfig(
+                keyCode: UInt32(event.keyCode),
+                carbonModifiers: modifiers,
+                displayText: HotKeyStore.displayText(for: event)
+            )
+            let handler: () -> Void = { [weak self] in self?.clipboardController.show() }
+
+            if self.hotKeyCenter.register(config, id: HotKeyCenter.clipboardID, onTrigger: handler) {
+                HotKeyStore.save(config, for: .clipboard)
+                self.settingsWindow?.refreshClipboardHotKey(config)
+                self.updateMenuTitles()
+                accepted = true
+                NSLog("iCut: 剪贴板历史快捷键已更新为 \(config.displayText)")
+                window.close()
+            } else {
+                NSSound.beep()
+                window.showMessage("\(config.displayText) 已被其它应用占用，请换一个组合")
+            }
+        }
+
+        window.onClose = { [weak self] in
+            guard let self else { return }
+            // 取消或异常关闭时把原来的组合恢复回来
+            if !accepted {
+                let config = HotKeyStore.load(.clipboard)
+                self.hotKeyCenter.register(config, id: HotKeyCenter.clipboardID) { [weak self] in
+                    self?.clipboardController.show()
+                }
+            }
+            self.clipboardShortcutWindow = nil
+        }
+
+        clipboardShortcutWindow = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }

@@ -1,16 +1,20 @@
 import AppKit
 
-/// 统一设置窗口：所有项改完即时生效，没有「确定」按钮。
+/// 统一设置窗口：截图与剪贴板历史分页，两套配置互不影响。
 final class SettingsWindow: NSWindow, NSWindowDelegate {
-    private let settingsView = SettingsContentView()
+    private let captureView = SettingsContentView()
+    private let clipboardView = ClipboardSettingsView()
 
     /// 快捷键录制涉及热键重注册与配置落盘，交给 AppDelegate 处理
     var onRequestHotKeyEdit: (() -> Void)?
+    var onRequestClipboardHotKeyEdit: (() -> Void)?
+    var onClipboardChanged: ((ClipboardSettings) -> Void)?
+    var onClearClipboard: (() -> Void)?
     var onClose: (() -> Void)?
 
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 600),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -19,12 +23,39 @@ final class SettingsWindow: NSWindow, NSWindowDelegate {
         isReleasedWhenClosed = false
         delegate = self
         center()
-        contentView = settingsView
-        settingsView.onRequestHotKeyEdit = { [weak self] in self?.onRequestHotKeyEdit?() }
+
+        let tabView = NSTabView()
+        tabView.tabViewType = .topTabsBezelBorder
+
+        let captureTab = NSTabViewItem(identifier: "capture")
+        captureTab.label = "截图"
+        captureTab.view = captureView
+        tabView.addTabViewItem(captureTab)
+
+        let clipboardTab = NSTabViewItem(identifier: "clipboard")
+        clipboardTab.label = "剪贴板"
+        clipboardTab.view = clipboardView
+        tabView.addTabViewItem(clipboardTab)
+
+        contentView = tabView
+
+        captureView.onRequestHotKeyEdit = { [weak self] in self?.onRequestHotKeyEdit?() }
+        clipboardView.onRequestHotKeyEdit = { [weak self] in self?.onRequestClipboardHotKeyEdit?() }
+        clipboardView.onClipboardChanged = { [weak self] settings in self?.onClipboardChanged?(settings) }
+        clipboardView.onClearClipboard = { [weak self] in self?.onClearClipboard?() }
     }
 
     func refreshHotKey(_ config: HotKeyConfig) {
-        settingsView.hotKeyText = config.displayText
+        captureView.hotKeyText = config.displayText
+    }
+
+    func refreshClipboardHotKey(_ config: HotKeyConfig) {
+        clipboardView.hotKeyText = config.displayText
+    }
+
+    /// 面板内也能改「保持打开」，打开设置窗口时重新读盘避免显示旧值。
+    func refreshClipboardSettings() {
+        clipboardView.reloadFromDisk()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -126,7 +157,7 @@ final class SettingsContentView: NSView, NSTextFieldDelegate {
 
         let aboutLabel = NSTextField(labelWithString: "iCut \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-")")
         aboutLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        let privacyLabel = NSTextField(wrappingLabelWithString: "所有处理均在本机完成：不联网、不上传截图，也不采集使用数据。")
+        let privacyLabel = NSTextField(wrappingLabelWithString: "所有处理均在本机完成：不联网、不上传截图或剪贴板内容，也不采集使用数据；剪贴板历史默认关闭且加密存储。")
         privacyLabel.font = .systemFont(ofSize: 11)
         privacyLabel.textColor = .secondaryLabelColor
 

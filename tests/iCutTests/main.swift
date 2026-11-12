@@ -41,6 +41,10 @@ runAnchorResilienceTests()
 runStitchAccumulatorTests()
 runStickyHeaderStitchingTests()
 runScrollbarStitchingTests()
+runClipboardCryptoTests()
+runClipboardSettingsTests()
+runPasteboardSnapshotTests()
+runClipboardStoreTests()
 
 print("")
 if failures == 0 {
