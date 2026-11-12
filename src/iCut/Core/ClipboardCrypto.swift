@@ -40,23 +40,35 @@ enum ClipboardCrypto {
     // MARK: - 主密钥
 
     /// 读取失败返回 nil：调用方据此暂停记录，绝不静默降级为明文。
+    /// 钥匙串访问不放在锁内，避免授权弹窗/钥匙串变慢时主线程一直等锁。
     static var masterKey: SymmetricKey? {
         lock.lock()
-        defer { lock.unlock() }
-        if let cachedKey { return cachedKey }
+        if let cachedKey {
+            lock.unlock()
+            return cachedKey
+        }
+        lock.unlock()
+
         guard let key = loadOrCreateKey() else { return nil }
-        cachedKey = key
-        return key
+        lock.lock()
+        if cachedKey == nil { cachedKey = key }
+        let resolved = cachedKey
+        lock.unlock()
+        return resolved
     }
 
     /// 重建密钥 = 删除旧条目 + 生成新密钥；历史数据由调用方负责清空。
     @discardableResult
     static func regenerateKey() -> SymmetricKey? {
         lock.lock()
-        defer { lock.unlock() }
+        cachedKey = nil
+        lock.unlock()
+
         deleteKey()
         guard let key = loadOrCreateKey() else { return nil }
+        lock.lock()
         cachedKey = key
+        lock.unlock()
         return key
     }
 

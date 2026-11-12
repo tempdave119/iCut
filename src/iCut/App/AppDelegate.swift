@@ -4,6 +4,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var captureMenuItem: NSMenuItem?
     private var clipboardMenuItem: NSMenuItem?
+    /// 剪贴板热键注册失败时菜单要明确标出来，避免用户以为快捷键可用
+    private var clipboardHotKeyRegistered = false
     private let hotKeyCenter = HotKeyCenter()
     private var shortcutWindow: ShortcutRecorderWindow?
     private var clipboardShortcutWindow: ShortcutRecorderWindow?
@@ -78,7 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenuTitles() {
         captureMenuItem?.title = "截图（\(activeConfig.displayText)）"
-        clipboardMenuItem?.title = "剪贴板（\(HotKeyStore.load(.clipboard).displayText)）"
+        let suffix = clipboardHotKeyRegistered ? "" : "（快捷键未注册）"
+        clipboardMenuItem?.title = "剪贴板（\(HotKeyStore.load(.clipboard).displayText)）\(suffix)"
     }
 
     private func registerActiveHotKey() {
@@ -104,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateMenuTitles()
         presentAlert(
             title: "快捷键注册失败",
-            message: "\(previous) 已被其它应用占用。请从菜单「设置快捷键…」换一个组合。"
+            message: "\(previous) 已被其它应用占用。请从菜单「设置…」换一个组合。"
         )
     }
 
@@ -155,10 +158,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setUpClipboardController() {
         clipboardController.onOpenSettings = { [weak self] in self?.openSettings() }
         clipboardController.onEncryptionUnavailable = { [weak self] in
-            self?.presentAlert(
-                title: "剪贴板历史加密不可用",
-                message: "无法读取钥匙串中的主密钥，记录已暂停（不会降级为明文）。请退出并重新打开 iCut 重试；若仍失败，检查系统是否允许 iCut 访问钥匙串。"
-            )
+            self?.presentEncryptionRecoveryAlert()
+        }
+        clipboardController.onIndexCorrupted = { [weak self] in
+            self?.presentIndexCorruptedAlert()
         }
         clipboardController.onPinImage = { [weak self] image, scale, origin in
             self?.pinController.pin(image: image, scale: scale, origin: origin)
@@ -178,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ok = hotKeyCenter.register(config, id: HotKeyCenter.clipboardID) { [weak self] in
             self?.clipboardController.show()
         }
+        clipboardHotKeyRegistered = ok
+        updateMenuTitles()
         if ok {
             NSLog("iCut: 已注册剪贴板历史快捷键 \(config.displayText)")
         } else {
@@ -216,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if self.hotKeyCenter.register(config, id: HotKeyCenter.clipboardID, onTrigger: handler) {
                 HotKeyStore.save(config, for: .clipboard)
+                self.clipboardHotKeyRegistered = true
                 self.settingsWindow?.refreshClipboardHotKey(config)
                 self.updateMenuTitles()
                 accepted = true
@@ -232,9 +238,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 取消或异常关闭时把原来的组合恢复回来
             if !accepted {
                 let config = HotKeyStore.load(.clipboard)
-                self.hotKeyCenter.register(config, id: HotKeyCenter.clipboardID) { [weak self] in
+                self.clipboardHotKeyRegistered = self.hotKeyCenter.register(config, id: HotKeyCenter.clipboardID) { [weak self] in
                     self?.clipboardController.show()
                 }
+                self.updateMenuTitles()
             }
             self.clipboardShortcutWindow = nil
         }
@@ -350,6 +357,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 抓屏与覆盖层创建之间若屏幕配置变化，旧坐标会失真
+        let currentIDs = Set(NSScreen.screens.compactMap {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        })
+        guard frames.count == NSScreen.screens.count, Set(frames.map(\.displayID)) == currentIDs else {
+            pinController.restoreAfterCapture()
+            presentAlert(title: "屏幕配置已变化", message: "显示器在抓屏时发生了变化，请重新截图。")
+            return
+        }
+
         selectionController.begin(frames: frames) { [weak self] outcome in
             guard let self else { return }
             self.pinController.restoreAfterCapture()
@@ -357,6 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch outcome {
             case .cancelled:
                 NSLog("iCut: 截图已取消")
+                self.restoreFocusToPreviousApp()
 
             case .confirmed(let selection):
                 // 确认只复制；贴图由工具栏的图钉按钮单独触发
@@ -368,11 +386,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSLog(
                     "iCut: 选区 \(Int(selection.rectInScreen.width))x\(Int(selection.rectInScreen.height))pt → \(selection.image.width)x\(selection.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"
                 )
-                // 自动保存默认关闭；开关与目录由设置面板维护
-                AutoSaver.saveIfEnabled(
+                // 自动保存默认关闭；编码与写盘放后台，避免阻塞截图完成后的主线程
+                AutoSaver.saveIfEnabledInBackground(
                     image: selection.image,
                     scale: selection.frame.backingScaleFactor
                 )
+                // 标准 AppKit 文档在应用回到前台后会恢复输入焦点，恢复后才能直接 ⌘V
+                self.restoreFocusToPreviousApp()
 
             case .pinRequested(let selection):
                 self.pinController.pin(
@@ -381,6 +401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     origin: Self.pinOrigin(for: selection)
                 )
                 NSLog("iCut: 已贴图，共 \(self.pinController.count) 张")
+                self.restoreFocusToPreviousApp()
 
             case .ocrRequested(let selection):
                 self.recognizeText(in: selection.image)
@@ -399,6 +420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     NSLog("iCut: 保存已取消或失败")
                 }
+                self.restoreFocusToPreviousApp()
             }
         }
     }
@@ -424,36 +446,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let copied = ClipboardService.copy(image: output.image, scale: output.scale)
             if copied { self.clipboardController.noteCaptureCopy() }
-            let savedURL = AutoSaver.saveIfEnabled(image: output.image, scale: output.scale)
             NSLog(
                 "iCut: 长截图 \(output.image.width)x\(output.image.height)px，剪贴板\(copied ? "已写入" : "写入失败")"
             )
 
-            // 长图没有预览窗口，用一次性提示明确告诉用户图在哪
+            // 长图没有预览窗口，用一次性提示明确告诉用户图在哪；保存放后台，避免大图编码卡主线程
             let size = "\(output.image.width)×\(output.image.height)"
-            let message: String
-            if !copied {
-                message = "长图已生成 \(size)，但复制到剪贴板失败"
-            } else if savedURL != nil {
-                message = "长图已复制并保存 \(size)"
-            } else {
-                message = "长图已复制 \(size) · ⌘V 粘贴"
+            AutoSaver.saveIfEnabledInBackground(image: output.image, scale: output.scale) { savedURL in
+                let message: String
+                if !copied {
+                    message = "长图已生成 \(size)，但复制到剪贴板失败"
+                } else if savedURL != nil {
+                    message = "长图已复制并保存 \(size)"
+                } else {
+                    message = "长图已复制 \(size) · ⌘V 粘贴"
+                }
+                LongCaptureToast.show(
+                    message,
+                    near: Self.appKitRect(frame: frame, rectInScreen: rectInScreen),
+                    in: Self.visibleFrame(for: frame)
+                )
             }
-            LongCaptureToast.show(
-                message,
-                near: Self.appKitRect(frame: frame, rectInScreen: rectInScreen),
-                in: frame.screenFrame
-            )
         }
         longCapture = controller
         controller.start()
 
-        restoreFocusAfterLongCaptureStart()
+        restoreFocusToPreviousApp()
     }
 
-    /// 把焦点还给截图前的应用：iCut 占着前台时页面可能收不到滚轮，表现为“怎么滚都不动”。
+    /// 把焦点还给截图前的应用：
+    /// - 普通截图结束后恢复前台，标准 AppKit 文档（如 TextEdit）才能直接 ⌘V；
+    /// - 长截图开始时恢复，页面才能收到滚轮。
+    /// 微信等自绘输入控件不会因应用激活而恢复输入焦点，仍需用户点击输入框（已知限制）。
     /// 目标已退出或激活失败时回退到取消激活 iCut，避免前台卡在一个没有窗口的进程上。
-    private func restoreFocusAfterLongCaptureStart() {
+    private func restoreFocusToPreviousApp() {
         if let app = appBeforeCapture,
            app.bundleIdentifier != Bundle.main.bundleIdentifier,
            !app.isTerminated,
@@ -484,7 +510,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func presentOCRResult(text: String, message: String) {
         if ocrWindow == nil {
             let window = OCRResultWindow()
-            window.onClose = { [weak self] in self?.ocrWindow = nil }
+            window.onClose = { [weak self] in
+                self?.ocrWindow = nil
+                // 从剪贴板面板打开 OCR 时，窗口关闭后再恢复面板自动收起
+                self?.clipboardController.endExternalPanelHold()
+            }
             ocrWindow = window
         }
         guard let window = ocrWindow else { return }
@@ -502,6 +532,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             width: rectInScreen.width,
             height: rectInScreen.height
         )
+    }
+
+    /// 悬浮提示限制在屏幕可见区域，避免被菜单栏遮挡
+    private static func visibleFrame(for frame: DisplayFrame) -> CGRect {
+        NSScreen.screens.first { $0.frame == frame.screenFrame }?.visibleFrame ?? frame.screenFrame
     }
 
     /// 选区是屏内左上原点坐标，贴图窗口需要左下原点的全局坐标
@@ -523,6 +558,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         presentPermissionAlert()
+    }
+
+    private func presentEncryptionRecoveryAlert() {
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "剪贴板历史加密不可用"
+            alert.informativeText = "无法读取钥匙串中的主密钥，记录已暂停（不会降级为明文）。可以先重试；若仍失败，可重建密钥并清空历史。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "重试")
+            alert.addButton(withTitle: "重建密钥…")
+            alert.addButton(withTitle: "取消")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                self.clipboardController.retryEncryption()
+            case .alertSecondButtonReturn:
+                self.clipboardController.rebuildKeyWithConfirmation()
+            default:
+                break
+            }
+        }
+    }
+
+    private func presentIndexCorruptedAlert() {
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "剪贴板历史损坏"
+            alert.informativeText = "索引与备份都无法读取。可以清空历史并重建，旧记录无法恢复。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "清空重建…")
+            alert.addButton(withTitle: "稍后")
+            if alert.runModal() == .alertFirstButtonReturn {
+                self.clipboardController.rebuildKeyWithConfirmation()
+            }
+        }
     }
 
     private func presentPermissionAlert() {

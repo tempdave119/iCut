@@ -33,6 +33,23 @@ enum AutoSaver {
         }
     }
 
+    /// 后台编码/写盘版本：截图结束后不阻塞主线程，完成后回主线程回调。
+    static func saveIfEnabledInBackground(
+        image: CGImage,
+        scale: CGFloat,
+        settings: AutoSaveSettings = .load(),
+        completion: ((URL?) -> Void)? = nil
+    ) {
+        guard settings.enabled else {
+            completion?(nil)
+            return
+        }
+        DispatchQueue.global(qos: .utility).async {
+            let url = saveIfEnabled(image: image, scale: scale, settings: settings)
+            DispatchQueue.main.async { completion?(url) }
+        }
+    }
+
     /// 同一秒内连续截图会撞名，追加 -2、-3 而不是覆盖上一张
     private static func uniqueURL(in directory: URL, template: String) -> URL {
         let base = FileNameTemplate.render(template: template)

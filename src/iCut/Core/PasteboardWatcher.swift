@@ -11,7 +11,8 @@ final class PasteboardWatcher {
     private var lastChangeCount: Int
     private var suppressedChangeCount: Int?
     private var recordImages = true
-    private var onSnapshot: ((PasteboardSnapshot) -> Void)?
+    private var onSnapshot: ((PasteboardSnapshot, Int) -> Void)?
+    private let lock = NSLock()
 
     init(pasteboard: NSPasteboard = .general, interval: TimeInterval = 0.3) {
         self.pasteboard = pasteboard
@@ -25,7 +26,10 @@ final class PasteboardWatcher {
 
     var isRunning: Bool { timer != nil }
 
-    func start(recordImages: Bool, onSnapshot: @escaping (PasteboardSnapshot) -> Void) {
+    /// 当前剪贴板变化计数，供截图写入后记录预期值
+    var currentChangeCount: Int { pasteboard.changeCount }
+
+    func start(recordImages: Bool, onSnapshot: @escaping (PasteboardSnapshot, Int) -> Void) {
         self.recordImages = recordImages
         self.onSnapshot = onSnapshot
 
@@ -43,11 +47,30 @@ final class PasteboardWatcher {
         timer?.invalidate()
         timer = nil
         onSnapshot = nil
+        lock.lock()
+        suppressedChangeCount = nil
+        lock.unlock()
     }
 
     /// 自己写完剪贴板后调用：下一次命中的变化直接丢弃，避免回填产生重复条目。
     func noteSelfWrite() {
-        suppressedChangeCount = pasteboard.changeCount
+        noteSelfWrite(changeCount: pasteboard.changeCount)
+    }
+
+    /// 供 tick 与测试共用：记录预期的自写计数。
+    func noteSelfWrite(changeCount: Int) {
+        lock.lock()
+        suppressedChangeCount = changeCount
+        lock.unlock()
+    }
+
+    /// 供 tick 与测试共用：命中预期计数时消费并返回 true。
+    func shouldSuppress(changeCount: Int) -> Bool {
+        lock.lock()
+        let suppressed = suppressedChangeCount
+        if suppressed == changeCount { suppressedChangeCount = nil }
+        lock.unlock()
+        return suppressed == changeCount
     }
 
     private func tick() {
@@ -55,18 +78,16 @@ final class PasteboardWatcher {
         guard count != lastChangeCount else { return }
         lastChangeCount = count
 
-        if suppressedChangeCount == count {
-            suppressedChangeCount = nil
-            return
-        }
+        if shouldSuppress(changeCount: count) { return }
 
         let pasteboard = self.pasteboard
         let recordImages = self.recordImages
-        parseQueue.async { [weak self] in
+        let callback = onSnapshot
+        parseQueue.async {
             guard let snapshot = PasteboardSnapshot.parse(pasteboard, recordImages: recordImages) else {
                 return
             }
-            self?.onSnapshot?(snapshot)
+            callback?(snapshot, count)
         }
     }
 }

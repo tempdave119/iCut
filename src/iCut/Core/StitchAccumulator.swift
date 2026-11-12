@@ -56,8 +56,9 @@ final class StitchAccumulator {
         // 超出上限时裁到剩余容量，不整帧丢弃，否则长图永远差最后一段
         let take = min(added, remaining)
         let stripStart = match.skipRows + match.overlapRows
-        guard let strip = image.cropping(
-            to: CGRect(x: 0, y: stripStart, width: min(width, image.width), height: take)
+        guard let strip = detachedStrip(
+            from: image,
+            rect: CGRect(x: 0, y: stripStart, width: min(width, image.width), height: take)
         ) else {
             return .unchanged("裁切失败")
         }
@@ -68,6 +69,26 @@ final class StitchAccumulator {
         lastSkipRows = match.skipRows
         height += take
         return .appended(addedRows: take)
+    }
+
+    /// 裁切后复制到独立位图：CGImage.cropping 与源帧共享数据，直接保存会拖住整帧，
+    /// 慢速滚动到高度上限时可能累积大量整屏帧。
+    private func detachedStrip(from image: CGImage, rect: CGRect) -> CGImage? {
+        guard let cropped = image.cropping(to: rect) else { return nil }
+        let width = cropped.width
+        let height = cropped.height
+        guard width > 0, height > 0 else { return nil }
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 
     /// 自顶向下合成；没有内容时返回 nil。
@@ -89,7 +110,7 @@ final class StitchAccumulator {
         for strip in strips {
             let stripHeight = CGFloat(strip.height)
             y -= stripHeight
-            context.draw(strip, in: CGRect(x: 0, y: y, width: CGFloat(strip.width), height: stripHeight))
+            context.draw(strip, in: CGRect(x: 0, y: y, width: CGFloat(width), height: stripHeight))
         }
         return context.makeImage()
     }

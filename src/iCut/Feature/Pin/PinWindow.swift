@@ -108,7 +108,10 @@ final class PinContentView: NSView {
         }
 
         let frame = window.frame
-        let maxSide = max(window.screen?.visibleFrame.width ?? frame.width, frame.width) * 2
+        let visible = window.screen?.visibleFrame ?? frame
+        let aspect = frame.height / max(frame.width, 1)
+        // 同时限制宽高，避免竖长图放大到几倍屏高后滚轮锚点移出窗口
+        let maxSide = min(visible.width * 2, visible.height * 2 / max(aspect, 0.01))
         let newFrame = ScreenGeometry.zoomedFrame(
             current: frame,
             cursor: NSEvent.mouseLocation,
@@ -131,7 +134,17 @@ final class PinContentView: NSView {
         frame.size = CGSize(width: frame.height, height: frame.width)
         frame.origin = CGPoint(x: center.x - frame.width / 2, y: center.y - frame.height / 2)
         window.setFrame(frame, display: true)
+        clampToScreen(window)
         needsDisplay = true
+    }
+
+    /// 旋转后把窗口拉回可见区域，避免整张贴图落在屏幕外
+    private func clampToScreen(_ window: NSWindow) {
+        guard let visible = window.screen?.visibleFrame else { return }
+        var frame = window.frame
+        frame.origin.x = min(max(visible.minX, frame.minX), max(visible.minX, visible.maxX - frame.width))
+        frame.origin.y = min(max(visible.minY, frame.minY), max(visible.minY, visible.maxY - frame.height))
+        window.setFrame(frame, display: true)
     }
 
     private func rotatedImage() -> CGImage? {

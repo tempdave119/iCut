@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 
 /// 剪贴板面板：搜索、键盘导航、复制、删除与永久保留。
 /// 只负责展示与交互，数据读写全部交给 ClipboardController。
@@ -62,8 +63,8 @@ final class ClipboardPanel: NSPanel, NSWindowDelegate {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    func present(items: [ClipboardStore.ClipItem], storageFull: Bool, retention: TimeInterval?) {
-        panelView.apply(items: items, storageFull: storageFull, retention: retention)
+    func present(items: [ClipboardStore.ClipItem], storageFull: Bool, retention: TimeInterval?, selectFirst: Bool = true) {
+        panelView.apply(items: items, storageFull: storageFull, retention: retention, selectFirst: selectFirst)
     }
 
     func syncKeepOpen(_ enabled: Bool) {
@@ -152,7 +153,7 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
     private static let defaultHint = "Enter 复制 · ⌥⌫ 删除 · Esc 关闭"
 
     private let searchField = NSSearchField()
-    private let tableView = NSTableView()
+    private let tableView = ClipboardTableView(frame: .zero)
     private let scrollView = NSScrollView()
     private let bannerLabel = NSTextField(wrappingLabelWithString: "")
     private let emptyLabel = NSTextField(wrappingLabelWithString: "")
@@ -167,6 +168,8 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
     private var storageFull = false
     private var retention: TimeInterval?
     private var statusWorkItem: DispatchWorkItem?
+    private var fileExistsCache: [String: Bool] = [:]
+    private var fileExistsCacheDate = Date.distantPast
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -179,13 +182,13 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
 
     // MARK: - 对外
 
-    func apply(items: [ClipboardStore.ClipItem], storageFull: Bool, retention: TimeInterval?) {
+    func apply(items: [ClipboardStore.ClipItem], storageFull: Bool, retention: TimeInterval?, selectFirst: Bool = true) {
         self.items = items
         self.storageFull = storageFull
         self.retention = retention
-        bannerLabel.stringValue = storageFull ? "存储预算已被收藏占满，新内容暂不记录" : ""
+        bannerLabel.stringValue = storageFull ? "图片存储预算已满，新复制的图片暂不记录" : ""
         bannerLabel.isHidden = !storageFull
-        reloadFiltered(selectFirst: true)
+        reloadFiltered(selectFirst: selectFirst)
     }
 
     func syncKeepOpen(_ enabled: Bool) {
@@ -220,6 +223,8 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(copyCurrent(_:))
+        // 鼠标点过表格后 firstResponder 会从搜索框移走，键盘操作不能只挂在搜索框上
+        tableView.onKeyCommand = { [weak self] event in self?.handleTableKey(event) ?? false }
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -347,6 +352,19 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
         return filtered[row]
     }
 
+    /// 文件存在性检查按 5 秒缓存，避免滚动时每行都同步访问磁盘
+    private func cachedFileExists(_ path: String) -> Bool {
+        let now = Date()
+        if now.timeIntervalSince(fileExistsCacheDate) > 5 {
+            fileExistsCache.removeAll()
+            fileExistsCacheDate = now
+        }
+        if let cached = fileExistsCache[path] { return cached }
+        let exists = FileManager.default.fileExists(atPath: path)
+        fileExistsCache[path] = exists
+        return exists
+    }
+
     // MARK: - NSTableViewDataSource / Delegate
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -360,13 +378,41 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
             ?? ClipItemRowView(identifier: identifier)
         let item = filtered[row]
         // 行内按钮固定「复制但不关闭」，便于连续复制多条
-        view.configure(with: item, query: searchField.stringValue, retention: retention) { [weak self] in
+        view.configure(
+            with: item,
+            query: searchField.stringValue,
+            retention: retention,
+            fileExists: { [weak self] path in self?.cachedFileExists(path) ?? true }
+        ) { [weak self] in
             self?.copy(item, keepOpen: true)
         }
         return view
     }
 
     // MARK: - 搜索框键盘
+
+    private func handleTableKey(_ event: NSEvent) -> Bool {
+        switch Int(event.keyCode) {
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            copyCurrent(nil)
+            return true
+        case kVK_Delete:
+            if event.modifierFlags.contains(.command) {
+                onClearAll?()
+                return true
+            }
+            if event.modifierFlags.contains(.option) {
+                if let item = selectedItem { onDelete?(item) }
+                return true
+            }
+            return false
+        case kVK_Escape:
+            onHide?()
+            return true
+        default:
+            return false
+        }
+    }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         switch commandSelector {
@@ -510,6 +556,25 @@ final class ClipboardPanelView: NSView, NSTableViewDataSource, NSTableViewDelega
     }
 }
 
+/// 表格获得焦点时把 Enter / ⌥⌫ / ⌘⌫ 交给面板统一处理，
+/// 否则鼠标点过列表后键盘操作会失效。
+private final class ClipboardTableView: NSTableView {
+    var onKeyCommand: ((NSEvent) -> Bool)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("ClipboardTableView 不支持从 nib 加载")
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if onKeyCommand?(event) == true { return }
+        super.keyDown(with: event)
+    }
+}
+
 /// 单行：类型图标（图片用缩略图）、摘要、相对时间、行内复制按钮与永久保留标记。
 final class ClipItemRowView: NSTableCellView {
     private let iconView = NSImageView()
@@ -599,6 +664,7 @@ final class ClipItemRowView: NSTableCellView {
         with item: ClipboardStore.ClipItem,
         query: String,
         retention: TimeInterval?,
+        fileExists: (String) -> Bool,
         onCopy: @escaping () -> Void
     ) {
         self.onCopy = onCopy
@@ -608,7 +674,7 @@ final class ClipItemRowView: NSTableCellView {
         case .text:
             iconView.image = NSImage(systemSymbolName: "text.alignleft", accessibilityDescription: "文本")
             iconView.contentTintColor = .secondaryLabelColor
-            titleLabel.attributedStringValue = Self.highlighted(Self.summary(for: item.text), query: query)
+            titleLabel.attributedStringValue = Self.highlighted(Self.summary(for: item.text, query: query), query: query)
         case .image:
             if let data = item.thumbnailPNG, let image = NSImage(data: data) {
                 iconView.image = image
@@ -631,7 +697,7 @@ final class ClipItemRowView: NSTableCellView {
         if item.isFromCapture == true { parts.append("iCut 截图") }
         if item.isTruncated { parts.append("已截断") }
         if item.kind == .fileURLs, let paths = item.filePaths,
-           paths.contains(where: { !FileManager.default.fileExists(atPath: $0) }) {
+           paths.contains(where: { !fileExists($0) }) {
             parts.append("文件已不存在")
         }
         parts.append(ClipboardExpiry.text(
@@ -654,17 +720,20 @@ final class ClipItemRowView: NSTableCellView {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return attributed }
 
-        let lowerText = text.lowercased()
-        let lowerNeedle = needle.lowercased()
-        var searchStart = lowerText.startIndex
-        while searchStart < lowerText.endIndex,
-              let range = lowerText.range(of: lowerNeedle, range: searchStart..<lowerText.endIndex) {
+        // 用 NSString 的大小写不敏感查找：lowercased 可能改变长度，Range 映射会越界
+        let nsText = text as NSString
+        var searchRange = NSRange(location: 0, length: nsText.length)
+        while searchRange.length > 0 {
+            let range = nsText.range(of: needle, options: [.caseInsensitive], range: searchRange)
+            if range.location == NSNotFound { break }
             attributed.addAttribute(
                 .backgroundColor,
                 value: NSColor.systemYellow.withAlphaComponent(0.35),
-                range: NSRange(range, in: text)
+                range: range
             )
-            searchStart = range.upperBound
+            let next = range.location + max(range.length, 1)
+            if next >= nsText.length { break }
+            searchRange = NSRange(location: next, length: nsText.length - next)
         }
         return attributed
     }
@@ -673,14 +742,24 @@ final class ClipItemRowView: NSTableCellView {
         onCopy?()
     }
 
-    private static func summary(for text: String?) -> String {
+    private static func summary(for text: String?, query: String = "") -> String {
         guard let text else { return "（空文本）" }
         let singleLine = text
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\t", with: " ")
             .trimmingCharacters(in: .whitespaces)
-        return String(singleLine.prefix(120))
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return String(singleLine.prefix(120)) }
+
+        // 摘要围绕命中位置截取，避免命中词落在 120 字符之外时看不到
+        let nsText = singleLine as NSString
+        let range = nsText.range(of: needle, options: [.caseInsensitive])
+        guard range.location != NSNotFound else { return String(singleLine.prefix(120)) }
+        let start = max(0, range.location - 40)
+        let end = min(nsText.length, range.location + range.length + 80)
+        let snippet = nsText.substring(with: NSRange(location: start, length: end - start))
+        return (start > 0 ? "…" : "") + snippet + (end < nsText.length ? "…" : "")
     }
 
     private static func fileSummary(for paths: [String]) -> String {

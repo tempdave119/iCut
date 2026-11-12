@@ -1,10 +1,13 @@
 import AppKit
+import ImageIO
 
 /// 剪贴板历史的编排层：配置、采集、面板与回填。
 /// AppDelegate 只负责装配与菜单入口，具体流程都在这里。
 final class ClipboardController {
     /// 钥匙串不可用时通知外部（弹一次说明），记录保持暂停，不降级为明文。
     var onEncryptionUnavailable: (() -> Void)?
+    /// 索引与备份都无法读取时通知外部提示“历史损坏”
+    var onIndexCorrupted: (() -> Void)?
     var onOpenSettings: (() -> Void)?
     /// 图片条目的跨模块联动：贴图 / 识别文字 / 保存，由 AppDelegate 注入。
     var onPinImage: ((CGImage, CGFloat, CGPoint) -> Void)?
@@ -16,9 +19,9 @@ final class ClipboardController {
     private let watcher = PasteboardWatcher()
     private let panel = ClipboardPanel()
     private var storageFullNotified = false
-    /// 截图写入剪贴板后置位，下一次采集把该条目标记为截图。
+    /// 截图写入剪贴板后记录预期 changeCount，下一帧命中同一计数才标记为截图。
     private let captureMarkLock = NSLock()
-    private var pendingCaptureMark = false
+    private var captureMark = CaptureMark()
 
     init() {
         settings = ClipboardSettings.load()
@@ -67,8 +70,12 @@ final class ClipboardController {
     }
 
     func show() {
-        guard settings.enabled, let store else {
+        guard settings.enabled else {
             presentNotEnabledAlert()
+            return
+        }
+        guard let store else {
+            presentEncryptionUnavailableAlert()
             return
         }
         panel.syncKeepOpen(settings.keepPanelOpen)
@@ -92,6 +99,46 @@ final class ClipboardController {
         store?.saveNow()
     }
 
+    /// 钥匙串可用后重试：清掉缓存密钥并重新建 store。
+    func retryEncryption() {
+        guard settings.enabled, store == nil else { return }
+        ClipboardCrypto.resetCache()
+        start()
+    }
+
+    /// 重建密钥：先二次确认，成功后清空旧历史并重新启动采集。
+    func rebuildKeyWithConfirmation() {
+        guard settings.enabled else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "重建剪贴板历史密钥？"
+        alert.informativeText = "会删除当前主密钥和全部历史（索引与图片），无法恢复。仅在钥匙串异常或历史损坏时使用。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "重建并清空")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        rebuildKey()
+    }
+
+    private func rebuildKey() {
+        watcher.stop()
+        store?.saveNow()
+        store = nil
+        guard ClipboardCrypto.regenerateKey() != nil else {
+            onEncryptionUnavailable?()
+            return
+        }
+        do {
+            let store = try ClipboardStore()
+            store.resetAllData()
+            self.store = store
+            start()
+        } catch {
+            NSLog("iCut: 重建剪贴板主密钥失败 — \(error)")
+            onEncryptionUnavailable?()
+        }
+    }
+
     // MARK: - 生命周期
 
     private func start() {
@@ -99,13 +146,14 @@ final class ClipboardController {
             do {
                 let store = try ClipboardStore()
                 store.onSelfWrite = { [weak self] in
-                    // 回填后把变化抑制掉，避免历史里多出一条自己写的重复内容
-                    DispatchQueue.main.async { self?.watcher.noteSelfWrite() }
+                    // 写剪贴板与记录预期计数必须同步，避免 0.3 秒轮询先看到变化
+                    self?.watcher.noteSelfWrite()
                 }
                 store.onStorageFull = { [weak self] in
                     DispatchQueue.main.async { self?.notifyStorageFull() }
                 }
                 self.store = store
+                if store.indexCorrupted { onIndexCorrupted?() }
             } catch {
                 NSLog("iCut: 剪贴板历史加密不可用，记录已暂停 — \(error)")
                 onEncryptionUnavailable?()
@@ -119,16 +167,23 @@ final class ClipboardController {
             maxEntries: settings.maxEntries,
             imageBudgetBytes: settings.imageBudgetBytes
         )
-        watcher.start(recordImages: settings.recordImages) { [weak self] snapshot in
+        // 后台解析队列直接持有当前 store，避免与主线程 stop() 置 nil 竞争
+        let storeRef = store
+        watcher.start(recordImages: settings.recordImages) { [weak self] snapshot, changeCount in
             guard let self else { return }
-            let isCapture = self.consumeCaptureMark()
-            self.store?.append(snapshot, isFromCapture: isCapture)
+            let isCapture = self.consumeCaptureMark(changeCount: changeCount)
+            storeRef.append(snapshot, isFromCapture: isCapture)
+            // 面板打开时后台采集也要出现在列表里，但不打断当前选中行
+            DispatchQueue.main.async { [weak self] in self?.refreshPanel(selectFirst: false) }
         }
         NSLog("iCut: 剪贴板历史已启动（图片=\(settings.recordImages ? "记录" : "关闭")）")
     }
 
     private func stop() {
         watcher.stop()
+        captureMarkLock.lock()
+        captureMark.reset()
+        captureMarkLock.unlock()
         store?.saveNow()
         store = nil
         panel.hidePanel()
@@ -163,52 +218,88 @@ final class ClipboardController {
 
     /// 截图确认与长截图完成后调用：标记下一次采集为截图来源。
     func noteCaptureCopy() {
+        // 历史关闭时 watcher 不运行，不留下标记，避免开启后误标第一条内容
+        guard settings.enabled else { return }
         captureMarkLock.lock()
-        pendingCaptureMark = true
+        captureMark.note(changeCount: watcher.currentChangeCount)
         captureMarkLock.unlock()
     }
 
-    private func consumeCaptureMark() -> Bool {
+    private func consumeCaptureMark(changeCount: Int) -> Bool {
         captureMarkLock.lock()
         defer { captureMarkLock.unlock() }
-        let value = pendingCaptureMark
-        pendingCaptureMark = false
-        return value
+        return captureMark.consume(changeCount: changeCount)
     }
 
     private func pin(_ item: ClipboardStore.ClipItem) {
-        guard let payload = imagePayload(item) else { return }
-        onPinImage?(payload.image, payload.scale, NSEvent.mouseLocation)
+        imagePayload(item) { [weak self] payload in
+            guard let self, let payload else { return }
+            self.onPinImage?(payload.image, payload.scale, NSEvent.mouseLocation)
+        }
     }
 
     private func recognize(_ item: ClipboardStore.ClipItem) {
-        guard let payload = imagePayload(item) else { return }
-        onOCRImage?(payload.image)
+        guard let onOCRImage else { return }
+        // OCR 窗口出现时面板会失去 key，窗口关闭前不要自动收起
+        beginExternalPanelHold()
+        imagePayload(item) { [weak self] payload in
+            guard let self else { return }
+            guard let payload else {
+                self.endExternalPanelHold()
+                return
+            }
+            onOCRImage(payload.image)
+        }
     }
 
     private func save(_ item: ClipboardStore.ClipItem) {
-        guard let payload = imagePayload(item) else { return }
-        onSaveImage?(payload.image, payload.scale)
-    }
-
-    private func imagePayload(_ item: ClipboardStore.ClipItem) -> (image: CGImage, scale: CGFloat)? {
-        guard item.kind == .image,
-              let store,
-              let data = store.imageData(for: item),
-              let image = NSImage(data: data) else { return nil }
-        var rect = CGRect(origin: .zero, size: image.size)
-        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
-            return nil
+        // 保存面板会让面板失去 key，临时跳过自动收起，保存完成后恢复
+        beginExternalPanelHold()
+        imagePayload(item) { [weak self] payload in
+            guard let self else { return }
+            defer { self.endExternalPanelHold() }
+            guard let payload else { return }
+            self.onSaveImage?(payload.image, payload.scale)
         }
-        return (cgImage, CGFloat(item.imageScale ?? 1))
     }
 
-    private func refreshPanel() {
+    /// 保存面板、OCR 结果窗口等外部窗口出现时暂停面板自动收起
+    func beginExternalPanelHold() {
+        panel.setAlertPresented(true)
+    }
+
+    func endExternalPanelHold() {
+        panel.setAlertPresented(false)
+    }
+
+    /// 解密与图片解码放后台，完成后回主线程；20MB 图片不再阻塞面板操作
+    private func imagePayload(
+        _ item: ClipboardStore.ClipItem,
+        completion: @escaping ((image: CGImage, scale: CGFloat)?) -> Void
+    ) {
+        guard item.kind == .image, let store else {
+            completion(nil)
+            return
+        }
+        let scale = CGFloat(item.imageScale ?? 1)
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let data = store.imageData(for: item),
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            DispatchQueue.main.async { completion((image, scale)) }
+        }
+    }
+
+    private func refreshPanel(selectFirst: Bool = true) {
         guard panel.isVisible, let store else { return }
         panel.present(
             items: store.allItems(),
             storageFull: store.isStorageFull,
-            retention: settings.retentionInterval
+            retention: settings.retentionInterval,
+            selectFirst: selectFirst
         )
     }
 
@@ -229,9 +320,14 @@ final class ClipboardController {
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let removed = store.count
-        store.clearAll()
-        refreshPanel()
-        NSLog("iCut: 剪贴板历史已清空 \(removed) 条")
+        // 大量图片密文删除放后台，避免清空时主线程卡顿
+        DispatchQueue.global(qos: .utility).async {
+            store.clearAll()
+            DispatchQueue.main.async {
+                self.refreshPanel()
+                NSLog("iCut: 剪贴板历史已清空 \(removed) 条")
+            }
+        }
     }
 
     /// 面板底部「清除」：只删未永久保留的记录，收藏原样保留。
@@ -251,15 +347,20 @@ final class ClipboardController {
         alert.addButton(withTitle: "清除")
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let removed = store.clearUnpinned()
-        refreshPanel()
-        NSLog("iCut: 剪贴板已清除未收藏记录 \(removed) 条")
+        // 大量图片密文删除放后台，避免清空时主线程卡顿
+        DispatchQueue.global(qos: .utility).async {
+            let removed = store.clearUnpinned()
+            DispatchQueue.main.async {
+                self.refreshPanel()
+                NSLog("iCut: 剪贴板已清除未收藏记录 \(removed) 条")
+            }
+        }
     }
 
     private func notifyStorageFull() {
         guard !storageFullNotified else { return }
         storageFullNotified = true
-        NSLog("iCut: 剪贴板历史图片预算已被收藏占满，暂停记录新图片")
+        NSLog("iCut: 图片存储预算已满，暂停记录新图片")
     }
 
     private func presentNotEnabledAlert() {
@@ -273,5 +374,15 @@ final class ClipboardController {
         if alert.runModal() == .alertFirstButtonReturn {
             onOpenSettings?()
         }
+    }
+
+    private func presentEncryptionUnavailableAlert() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "剪贴板历史加密不可用"
+        alert.informativeText = "无法读取钥匙串中的主密钥，记录已暂停（不会降级为明文）。请退出并重新打开 iCut 重试。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "好")
+        alert.runModal()
     }
 }

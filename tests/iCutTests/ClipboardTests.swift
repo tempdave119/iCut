@@ -19,6 +19,28 @@ func runClipboardCryptoTests() {
     expect(ClipboardCrypto.open(Data("not-sealed".utf8), using: key) == nil, "损坏密文应解密失败")
 }
 
+func runCaptureMarkTests() {
+    var mark = CaptureMark()
+    mark.note(changeCount: 5)
+    expectEqual(mark.consume(changeCount: 5), true, "匹配 changeCount 应标记为截图")
+    expectEqual(mark.consume(changeCount: 5), false, "标记只能消费一次")
+    mark.note(changeCount: 8)
+    expectEqual(mark.consume(changeCount: 9), false, "不同 changeCount 不应命中")
+    mark.reset()
+    expectEqual(mark.consume(changeCount: 8), false, "reset 后不应命中")
+}
+
+func runPasteboardWatcherTests() {
+    let watcher = PasteboardWatcher(
+        pasteboard: NSPasteboard(name: NSPasteboard.Name("iCutWatcher.\(UUID().uuidString)"))
+    )
+    watcher.noteSelfWrite(changeCount: 5)
+    expectEqual(watcher.shouldSuppress(changeCount: 5), true, "自写计数命中应抑制")
+    expectEqual(watcher.shouldSuppress(changeCount: 5), false, "抑制只能消费一次")
+    watcher.noteSelfWrite(changeCount: 8)
+    expectEqual(watcher.shouldSuppress(changeCount: 9), false, "不同计数不应抑制")
+}
+
 func runClipboardSettingsTests() {
     let fallback = ClipboardSettings.default
     expectEqual(fallback.enabled, false, "剪贴板历史默认关闭")
@@ -284,6 +306,53 @@ func runClipboardStoreTests() {
             store.append(blue, now: Date())
             expectEqual(store.count, 1, "预算已满时新图片应跳过")
         }
+    }
+
+    // 图片预算：未收藏时淘汰最旧图片，让新图进来（D1）
+    if let store = makeStore() {
+        store.clearAll()
+        guard let red = makeImageSnapshot(color: .systemRed),
+              let blue = makeImageSnapshot(color: .systemBlue) else {
+            expect(false, "图片淘汰测试快照构造失败")
+            return
+        }
+        store.configure(retention: nil, maxEntries: 200, imageBudgetBytes: 200 * 1024 * 1024)
+        store.append(red, now: Date().addingTimeInterval(-60))
+        store.configure(retention: nil, maxEntries: 200, imageBudgetBytes: red.byteCount + 1)
+        store.append(blue, now: Date())
+        expectEqual(store.count, 1, "预算不足时应淘汰最旧未收藏图片")
+        expectEqual(store.allItems().first?.hash, blue.hash, "应保留刚复制的新图片")
+    }
+
+    // 文件回填：原文件已删除时应拒绝
+    if let store = makeStore() {
+        store.clearAll()
+        let fileURL = root.appendingPathComponent("gone-\(UUID().uuidString).txt")
+        try? "x".write(to: fileURL, atomically: true, encoding: .utf8)
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("iCutStoreFile.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        _ = pasteboard.writeObjects([fileURL as NSURL])
+        if let snapshot = PasteboardSnapshot.parse(pasteboard, recordImages: true) {
+            store.append(snapshot)
+            try? FileManager.default.removeItem(at: fileURL)
+            if let item = store.allItems().first {
+                expectEqual(store.writeBack(item), false, "文件已不存在时不应回填")
+            } else {
+                expect(false, "文件回填测试缺少条目")
+            }
+        } else {
+            expect(false, "文件回填测试快照解析失败")
+        }
+    }
+
+    // 重建密钥/历史损坏时的清空
+    if let store = makeStore() {
+        store.append(makeTextSnapshot("reset-me")!, now: Date())
+        store.saveNow()
+        store.resetAllData()
+        expectEqual(store.count, 0, "resetAllData 应清空条目")
+        let indexURL = supportDir.appendingPathComponent("index.enc")
+        expectEqual(FileManager.default.fileExists(atPath: indexURL.path), false, "resetAllData 应删除索引")
     }
 }
 

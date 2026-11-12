@@ -69,16 +69,19 @@ final class LongCaptureController {
         panel.onCancel = { [weak self] in self?.finish(commit: false) }
         self.panel = panel
         panel.orderFront(nil)
-        panel.place(near: appKitRect, in: frame.screenFrame)
+        panel.place(near: appKitRect, in: visibleFrame)
         panel.update(
             status: "已拼接 0 px",
             hint: "把鼠标移到要截的页面上，向下滚动，高度会自动增长"
         )
         NSLog("iCut: 长截图开始 rect=\(rectInScreen)")
 
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        // 拖动滚动条等 tracking 场景会切 runloop mode，default 下定时器会暂停
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated], reason: "长截图采集中")
         // 拔插显示器或改分辨率后选区坐标会失效，继续抓帧只会一直失败
         NotificationCenter.default.addObserver(
@@ -113,6 +116,11 @@ final class LongCaptureController {
             width: rectInScreen.width,
             height: rectInScreen.height
         )
+    }
+
+    /// 控制条与提示应限制在屏幕可见区域，避免被菜单栏或 Dock 遮挡
+    private var visibleFrame: CGRect {
+        NSScreen.screens.first { $0.frame == frame.screenFrame }?.visibleFrame ?? frame.screenFrame
     }
 
     private func tick() {
@@ -241,7 +249,7 @@ final class LongCaptureController {
             self.guide = nil
         }
         if let message {
-            LongCaptureToast.show(message, near: appKitRect, in: frame.screenFrame)
+            LongCaptureToast.show(message, near: appKitRect, in: visibleFrame)
         }
 
         // 合成排在已入队的抓帧任务之后（串行 FIFO），保证包含最后一帧

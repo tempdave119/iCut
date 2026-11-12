@@ -53,6 +53,8 @@ final class ClipboardStore {
     private var items: [ClipItem] = []
     private var saveWorkItem: DispatchWorkItem?
     private var storageFull = false
+    /// 索引与备份都无法解密/解码时置位，供上层提示“历史损坏”
+    private(set) var indexCorrupted = false
     private var retention: TimeInterval?
     private var maxEntries = ClipboardSettings.default.maxEntries
     private var imageBudgetBytes = ClipboardSettings.default.imageBudgetBytes
@@ -145,21 +147,6 @@ final class ClipboardStore {
         queue.sync { items }
     }
 
-    func items(matching query: String) -> [ClipItem] {
-        queue.sync {
-            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return items }
-            let needle = trimmed.lowercased()
-            return items.filter { item in
-                if let text = item.text, text.lowercased().contains(needle) { return true }
-                if let paths = item.filePaths, paths.contains(where: { $0.lowercased().contains(needle) }) {
-                    return true
-                }
-                return false
-            }
-        }
-    }
-
     func append(_ snapshot: PasteboardSnapshot, now: Date = Date(), isFromCapture: Bool = false) {
         queue.sync {
             // 同内容 5 分钟内重复：只提前到顶部并刷新时间，不新增
@@ -173,12 +160,10 @@ final class ClipboardStore {
                 return
             }
 
-            // 图片放不下时直接跳过，避免插入后再回滚；预算被收藏占满时保持提示
+            // 图片放不下时先淘汰最旧未收藏；收藏占满预算或单张超预算才跳过
             if snapshot.kind == .image {
-                let projected = totalImageBytesLocked() + snapshot.byteCount
-                let imageCount = items.filter { $0.kind == .image }.count
-                if projected > imageBudgetBytes || imageCount >= maxImageEntries {
-                    storageFull = totalImageBytesLocked() > imageBudgetBytes
+                guard makeRoomForImageLocked(byteCount: snapshot.byteCount) else {
+                    storageFull = true
                     DispatchQueue.main.async { [weak self] in self?.onStorageFull?() }
                     return
                 }
@@ -194,6 +179,7 @@ final class ClipboardStore {
     func delete(id: UUID) {
         queue.sync {
             removeItemsLocked(ids: [id])
+            storageFull = totalImageBytesLocked() > imageBudgetBytes
             scheduleSaveLocked()
         }
     }
@@ -202,6 +188,7 @@ final class ClipboardStore {
         queue.sync {
             guard let index = items.firstIndex(where: { $0.id == id }) else { return }
             items[index].isPinned = pinned
+            storageFull = totalImageBytesLocked() > imageBudgetBytes
             scheduleSaveLocked()
         }
     }
@@ -210,6 +197,7 @@ final class ClipboardStore {
         queue.sync {
             removeItemsLocked(ids: Set(items.map(\.id)))
             items.removeAll()
+            storageFull = false
             saveWorkItem?.cancel()
             saveWorkItem = nil
             persistLocked()
@@ -223,10 +211,28 @@ final class ClipboardStore {
             let ids = Set(items.filter { !$0.isPinned }.map(\.id))
             guard !ids.isEmpty else { return 0 }
             removeItemsLocked(ids: ids)
+            storageFull = totalImageBytesLocked() > imageBudgetBytes
             saveWorkItem?.cancel()
             saveWorkItem = nil
             persistLocked()
             return ids.count
+        }
+    }
+
+    /// 重建密钥/历史损坏时清空索引与图片密文，不做部分保留
+    func resetAllData() {
+        queue.sync {
+            removeItemsLocked(ids: Set(items.map(\.id)))
+            items.removeAll()
+            storageFull = false
+            indexCorrupted = false
+            saveWorkItem?.cancel()
+            saveWorkItem = nil
+            try? fileManager.removeItem(at: indexURL)
+            try? fileManager.removeItem(at: backupURL)
+            try? fileManager.removeItem(at: imagesDir)
+            try? fileManager.createDirectory(at: imagesDir, withIntermediateDirectories: true)
+            try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: imagesDir.path)
         }
     }
 
@@ -253,8 +259,14 @@ final class ClipboardStore {
                 ok = pasteboard.writeObjects([image])
 
             case .fileURLs:
-                let urls = (item.filePaths ?? []).map { URL(fileURLWithPath: $0) as NSURL }
-                guard !urls.isEmpty else { return false }
+                let paths = item.filePaths ?? []
+                guard !paths.isEmpty else { return false }
+                // 路径只记引用：回填前复核一次，原文件失效时拒绝写入，避免粘贴后才报错
+                guard paths.allSatisfy({ fileManager.fileExists(atPath: $0) }) else {
+                    NSLog("iCut: 剪贴板回填失败 — 文件已不存在")
+                    return false
+                }
+                let urls = paths.map { URL(fileURLWithPath: $0) as NSURL }
                 pasteboard.clearContents()
                 ok = pasteboard.writeObjects(urls)
             }
@@ -302,10 +314,16 @@ final class ClipboardStore {
     }
 
     private func loadItems() -> [ClipItem] {
+        var sawIndexFile = false
         for url in [indexURL, backupURL] {
+            if fileManager.fileExists(atPath: url.path) { sawIndexFile = true }
             guard let encrypted = try? Data(contentsOf: url),
                   let decrypted = ClipboardCrypto.open(encrypted, using: key),
                   let envelope = try? decoder.decode(IndexEnvelope.self, from: decrypted) else {
+                continue
+            }
+            guard envelope.schemaVersion <= 1 else {
+                NSLog("iCut: 剪贴板历史索引版本过新（\(envelope.schemaVersion)），跳过")
                 continue
             }
             if url == backupURL {
@@ -313,6 +331,7 @@ final class ClipboardStore {
             }
             return envelope.items.sorted { $0.createdAt > $1.createdAt }
         }
+        indexCorrupted = sawIndexFile
         return []
     }
 
@@ -337,6 +356,11 @@ final class ClipboardStore {
         do {
             try sealed.write(to: tempURL, options: .atomic)
             try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
+            // 显式刷盘：原子替换前把数据落稳定，掉电时少丢一次变更
+            if let handle = try? FileHandle(forWritingTo: tempURL) {
+                try? handle.synchronize()
+                try? handle.close()
+            }
 
             if fileManager.fileExists(atPath: indexURL.path) {
                 try? fileManager.removeItem(at: backupURL)
@@ -405,6 +429,33 @@ final class ClipboardStore {
 
     private func totalImageBytesLocked() -> Int {
         items.filter { $0.kind == .image }.reduce(0) { $0 + $1.byteCount }
+    }
+
+    /// 给新图片腾空间：按最旧未收藏淘汰，预算或条数仍不够时返回 false。
+    /// 收藏不参与淘汰；收藏占满预算时由调用方提示，不静默删除收藏。
+    private func makeRoomForImageLocked(byteCount: Int) -> Bool {
+        guard byteCount <= imageBudgetBytes else { return false }
+
+        let images = items.filter { $0.kind == .image }
+        var imageBytes = images.reduce(0) { $0 + $1.byteCount }
+        var imageCount = images.count
+        guard imageBytes + byteCount > imageBudgetBytes || imageCount + 1 > maxImageEntries else {
+            return true
+        }
+
+        // 每次淘汰最旧的一张未收藏图片，直到预算与条数都放得下
+        let evictable = images.filter { !$0.isPinned }.sorted { $0.createdAt < $1.createdAt }
+        var doomed = Set<UUID>()
+        for item in evictable {
+            guard imageBytes + byteCount > imageBudgetBytes || imageCount + 1 > maxImageEntries else { break }
+            doomed.insert(item.id)
+            imageBytes -= item.byteCount
+            imageCount -= 1
+        }
+        if !doomed.isEmpty {
+            removeItemsLocked(ids: doomed)
+        }
+        return imageBytes + byteCount <= imageBudgetBytes && imageCount + 1 <= maxImageEntries
     }
 
     /// PNG 只存像素；不还原点尺寸就会被当成 1x 图，粘贴到文档里尺寸翻倍。

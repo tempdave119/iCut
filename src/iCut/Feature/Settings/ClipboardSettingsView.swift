@@ -108,12 +108,28 @@ final class ClipboardSettingsView: NSView {
         root.alignment = .leading
         root.spacing = 12
         root.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(root)
+
+        // 固定窗口高度下内容可能超出，外层滚动避免底部说明被裁剪
+        let scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = document
+        document.addSubview(root)
+        addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: topAnchor, constant: 22),
-            root.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
-            root.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            root.topAnchor.constraint(equalTo: document.topAnchor, constant: 22),
+            root.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
+            root.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
+            root.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -22),
             intro.widthAnchor.constraint(equalToConstant: 460),
             hintLabel.widthAnchor.constraint(equalToConstant: 460),
             maxEntriesPopup.widthAnchor.constraint(equalToConstant: 96),

@@ -182,12 +182,28 @@ final class SettingsContentView: NSView, NSTextFieldDelegate {
         root.alignment = .leading
         root.spacing = 18
         root.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(root)
+
+        // 固定窗口高度下内容可能超出，外层滚动避免底部「关于」被裁剪
+        let scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        let document = NSView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = document
+        document.addSubview(root)
+        addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: topAnchor, constant: 22),
-            root.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
-            root.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            root.topAnchor.constraint(equalTo: document.topAnchor, constant: 22),
+            root.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
+            root.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
+            root.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -22),
             directoryValue.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
             templateField.widthAnchor.constraint(equalToConstant: 240),
             // 自动换行的标签需要显式宽度，否则会按单行宽度撑出窗口

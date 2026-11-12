@@ -67,6 +67,8 @@ final class SelectionOverlayView: NSView {
     private var completedRect: CGRect?
     /// 悬停高亮的窗口（未按下时跟随鼠标）
     private var hoveredWindowRect: CGRect?
+    /// 窗口命中查询按时间节流，避免高频 mouseMoved 反复拉取全窗口列表
+    private var lastWindowProbe = Date.distantPast
     /// 按下时记住的窗口；没拖动就选中整窗，拖了就转手动框选
     private var pressedWindowRect: CGRect?
 
@@ -150,17 +152,16 @@ final class SelectionOverlayView: NSView {
     private static let barItemSpacing: CGFloat = 4
     private static let barPadding: CGFloat = 10
     private static let barGap: CGFloat = 14
-    /// 工具区 8 项（形状 + 4 个独立工具 + 长截图 + 文字识别 + 颜色），之后是动作区
-    private static let toolbarSectionCount = 8
     private static let shapeTools: [Annotation.Kind] = [.rectangle, .ellipse, .line, .arrow]
+    /// 工具栏配置集中在这里，新增按钮只需改数组，不再手动同步分区计数
+    private static let toolActions: [BarAction] = [
+        .shapes,
+        .tool(.freehand), .tool(.text), .tool(.mosaic), .tool(.number),
+        .longShot, .ocr, .colors
+    ]
+    private static let actionActions: [BarAction] = [.undo, .save, .pin, .cancel, .confirm]
 
-    private var barActions: [BarAction] {
-        var actions: [BarAction] = [.shapes]
-        actions += [.tool(.freehand), .tool(.text), .tool(.mosaic), .tool(.number)]
-        // 识别文字属于工具区，放在序号之后、颜色之前；工具区与动作区之间由 barGap 分隔
-        actions += [.longShot, .ocr, .colors, .undo, .save, .pin, .cancel, .confirm]
-        return actions
-    }
+    private var barActions: [BarAction] { Self.toolActions + Self.actionActions }
 
     private func barFrame() -> CGRect {
         let count = CGFloat(barActions.count)
@@ -197,7 +198,7 @@ final class SelectionOverlayView: NSView {
         let bar = barFrame()
 
         var offset = Self.barPadding
-        if index >= Self.toolbarSectionCount {
+        if index >= Self.toolActions.count {
             offset += Self.barGap
         }
         offset += CGFloat(index) * (Self.barItemSize + Self.barItemSpacing)
@@ -584,8 +585,10 @@ final class SelectionOverlayView: NSView {
     }
 
     private func handle(at point: CGPoint, in rect: CGRect) -> SelectionHandle? {
+        // 小选区时缩小命中范围，否则 8 个手柄会覆盖选区内部，单击无法确认
+        let slop = min(Self.handleHitSlop, max(2, min(rect.width, rect.height) / 4))
         for handle in SelectionHandle.allCases {
-            let hitRect = handleRect(handle, in: rect).insetBy(dx: -Self.handleHitSlop, dy: -Self.handleHitSlop)
+            let hitRect = handleRect(handle, in: rect).insetBy(dx: -slop, dy: -slop)
             if hitRect.contains(point) {
                 return handle
             }
@@ -771,14 +774,21 @@ final class SelectionOverlayView: NSView {
         }
 
         guard !state.isDragging, pressedWindowRect == nil else { return }
-        hoveredWindowRect = detectedWindowRect(at: point)
+        // 高频 mouseMoved 下不必每次都查全窗口列表，也避免整屏重绘
+        let now = Date()
+        guard now.timeIntervalSince(lastWindowProbe) >= 0.06 else { return }
+        lastWindowProbe = now
+        let rect = detectedWindowRect(at: point)
+        guard rect != hoveredWindowRect else { return }
+        hoveredWindowRect = rect
         needsDisplay = true
     }
 
     override func mouseExited(with event: NSEvent) {
-        guard hoveredBarIndex != nil || hoveredPanelIndex != nil else { return }
+        guard hoveredBarIndex != nil || hoveredPanelIndex != nil || hoveredWindowRect != nil else { return }
         hoveredBarIndex = nil
         hoveredPanelIndex = nil
+        hoveredWindowRect = nil
         needsDisplay = true
     }
 
@@ -873,7 +883,7 @@ final class SelectionOverlayView: NSView {
 
         // 手柄调整选区
         if let handle = activeHandle, let origin = handleOriginRect {
-            completedRect = resizedRect(origin: origin, handle: handle, to: point)
+            completedRect = clampedToBounds(resizedRect(origin: origin, handle: handle, to: point))
             needsDisplay = true
             return
         }
@@ -883,7 +893,7 @@ final class SelectionOverlayView: NSView {
             let dx = point.x - start.x
             let dy = point.y - start.y
             if abs(dx) > 2 || abs(dy) > 2 {
-                completedRect = origin.offsetBy(dx: dx, dy: dy)
+                completedRect = clampedToBounds(origin.offsetBy(dx: dx, dy: dy))
                 pendingConfirm = false
                 needsDisplay = true
             }
@@ -983,8 +993,8 @@ final class SelectionOverlayView: NSView {
             return
         }
 
-        if state.isUsable {
-            completedRect = state.rect
+        if state.isUsable, let rect = state.rect {
+            completedRect = clampedToBounds(rect)
             annotations.removeAll()
             redoStack.removeAll()
             nextNumber = 1
@@ -1246,6 +1256,15 @@ final class SelectionOverlayView: NSView {
             return rect
         }
         return completedRect
+    }
+
+    /// 选区必须留在当前屏幕内，避免出图时被裁掉、尺寸与标签不一致
+    private func clampedToBounds(_ rect: CGRect) -> CGRect {
+        let width = min(rect.width, bounds.width)
+        let height = min(rect.height, bounds.height)
+        let x = min(max(0, rect.minX), max(0, bounds.width - width))
+        let y = min(max(0, rect.minY), max(0, bounds.height - height))
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 }
 
