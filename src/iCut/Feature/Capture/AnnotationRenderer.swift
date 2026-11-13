@@ -24,6 +24,12 @@ enum AnnotationRenderer {
 
         context.draw(base, in: CGRect(x: 0, y: 0, width: base.width, height: base.height))
 
+        // CGContext 原点在左下，标注坐标是视图坐标（原点左上）。必须真正翻转 CTM：
+        // 只把 NSGraphicsContext 标成 flipped 会让标注整体上下镜像、文字倒置
+        context.saveGState()
+        context.translateBy(x: 0, y: CGFloat(base.height))
+        context.scaleBy(x: 1, y: -1)
+
         // 用 flipped 上下文复用视图那套绘制代码
         let graphicsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.saveGraphicsState()
@@ -38,6 +44,7 @@ enum AnnotationRenderer {
             )
         }
         NSGraphicsContext.restoreGraphicsState()
+        context.restoreGState()
 
         return context.makeImage() ?? base
     }

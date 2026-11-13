@@ -550,7 +550,7 @@ final class SelectionOverlayView: NSView {
         guard let action = barAction(at: point) else { return "" }
         switch action {
         case .shapes:
-            return "形状（当前：\(lastShape.displayName)）\n点击选择矩形 / 椭圆 / 直线 / 箭头"
+            return "形状（当前：\(lastShape.displayName)）\n单击直接使用，再点一次切换形状"
         case .tool(let kind):
             return "\(kind.displayName)（\(kind.shortcut)）\n\(hintText(for: kind))"
         case .colors:
@@ -1015,7 +1015,13 @@ final class SelectionOverlayView: NSView {
 
         switch action {
         case .shapes:
-            openPanel = (openPanel == .shapes) ? nil : .shapes
+            // 单击直接启用上次形状（默认矩形），已启用时再点才展开形状面板
+            if let activeTool, Self.shapeTools.contains(activeTool) {
+                openPanel = (openPanel == .shapes) ? nil : .shapes
+            } else {
+                activate(lastShape)
+                openPanel = nil
+            }
             needsDisplay = true
         case .tool(let kind):
             activate(kind)
@@ -1061,12 +1067,19 @@ final class SelectionOverlayView: NSView {
         NSLog("iCut: 标注工具 = \(activeTool?.displayName ?? "无")")
     }
 
+    /// 形状面板选形：直接设为激活工具，避免点到当前形状时被当成关闭
+    private func setShapeTool(_ kind: Annotation.Kind) {
+        activeTool = kind
+        lastShape = kind
+        NSLog("iCut: 标注工具 = \(kind.displayName)")
+    }
+
     /// 弹层点击：形状面板选工具，颜色面板选色
     private func selectPanelItem(_ index: Int) {
         switch openPanel {
         case .shapes:
             guard Self.shapeTools.indices.contains(index) else { return }
-            activate(Self.shapeTools[index])
+            setShapeTool(Self.shapeTools[index])
         case .colors:
             guard AnnotationColor.allCases.indices.contains(index) else { return }
             currentColor = AnnotationColor.allCases[index]

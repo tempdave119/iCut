@@ -80,7 +80,6 @@ enum AnnotationPainter {
             guard points.count >= 2 else { return }
             drawMosaic(
                 in: normalized(points[0], points[1]),
-                offset: offset,
                 scale: scale,
                 source: mosaicSource,
                 sourceScale: mosaicSourceScale
@@ -164,17 +163,17 @@ enum AnnotationPainter {
 
     private static func drawMosaic(
         in rect: CGRect,
-        offset: CGPoint,
         scale: CGFloat,
         source: CGImage?,
         sourceScale: CGFloat
     ) {
         guard let source, rect.width >= 2, rect.height >= 2, scale > 0 else { return }
 
-        // 绘制坐标 → 视图坐标 → 源图像素
+        // 取样源与绘制坐标共用同一原点（预览用整屏帧、导出用裁切图），只做缩放换算；
+        // 叠加选区偏移会取到源图范围之外，导致导出时整块马赛克丢失
         let sourceRect = CGRect(
-            x: (rect.minX / scale + offset.x) * sourceScale,
-            y: (rect.minY / scale + offset.y) * sourceScale,
+            x: rect.minX / scale * sourceScale,
+            y: rect.minY / scale * sourceScale,
             width: rect.width / scale * sourceScale,
             height: rect.height / scale * sourceScale
         ).integral

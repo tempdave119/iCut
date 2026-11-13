@@ -30,6 +30,7 @@ func expectClose(_ actual: CGFloat, _ expected: CGFloat, _ message: String, tole
 }
 
 runSelectionStateTests()
+runAnnotationRendererTests()
 runScreenGeometryTests()
 runHotKeyStoreTests()
 runFileNameTemplateTests()
